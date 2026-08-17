@@ -31,7 +31,22 @@ recorded user consent.
 - `test/lint/probe0-permission-mode.sh`, the paid probe recording the above
   against the real CLI, including that `deny` still beats a broad `allow`.
 
+- `allow_domains` in config, so the sandbox egress allowlist can include the
+  package registries a project actually needs.
+- Per-session context-baseline measurement, journaled and recorded, plus a
+  preflight refusal when the configured window does not clear it.
+- Session-log pruning (`relay_prune_sessions`), which the README already
+  promised.
+
 ### Fixed
+- A handoff with the right structure but over-long entries was discarded whole,
+  losing the session's position and forcing a recovery session. Entries are now
+  truncated to the cap and used; genuinely malformed handoffs are still dropped.
+- Review cadence was `N % review_every`, which could schedule a review
+  immediately after a review. It is now measured from the last review.
+- The extra-domains argument to the settings builder was never passed, and the
+  code behind it concatenated command substitutions — so the first extra domain
+  would have been glued onto `api.anthropic.com`, destroying both.
 - Usage-limit detection read the whole session log, so any log containing the
   digits `429` — a session uuid was enough — was discarded and re-run. It now
   reads the result envelope, and a successful result is never a usage limit

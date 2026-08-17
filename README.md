@@ -137,9 +137,16 @@ handoff that claims a guardrail was relaxed halts the run for a human.
 **Context window.** The thresholds are percentages of `window_<tier>`, so that
 number has to be the model's real window. A session already holds tens of
 thousands of tokens — system prompt, tool definitions, your `CLAUDE.md` —
-before its first tool call; 48k when this was measured. Setting a small window
-to "make handoffs fire quickly" makes them fire *immediately and always*, so
-the run produces handoffs and never work. Relay refuses to start below 100k.
+before its first tool call, and **that number is a property of your project,
+not a constant**: measured at 48k on a small repository and 69k on a large one
+with substantial project instructions. Setting a small window to "make handoffs
+fire quickly" makes them fire *immediately and always*, so the run produces
+handoffs and never work.
+
+Relay refuses to start below 100k, and after its first session it knows your
+project's real figure — it records the baseline and will refuse a window that
+does not clear it with room to work in, telling you what to set. If in doubt,
+use the model's actual context window.
 
 **Untracked files.** Relay stages modified tracked files plus untracked files
 that `.gitignore` does not exclude. Anything else writing into the working tree
