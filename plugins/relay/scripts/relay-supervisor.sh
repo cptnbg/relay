@@ -475,10 +475,20 @@ verify_complete() {
   if [ -n "$( cd "$PROJECT" && relay_git status --porcelain 2>/dev/null )" ]; then
     relay_journal "complete.rejected" "working tree not clean"; return 1
   fi
+  # Both sides are normalised before comparison. An empty reading is NOT "no
+  # constraint": `git rev-list --count HEAD` prints nothing on a repository
+  # with zero commits, so `commits_at_start` reads back empty, and the old
+  # `[ -n "$_start" ]` guard then skipped this check entirely — accepting a
+  # COMPLETE from a run that had produced no commits at all, which is exactly
+  # the claim this predicate exists to refuse. Treating an unreadable count as
+  # 0 fails toward rejection, and a rejected COMPLETE costs one session while
+  # an accepted false one ends the run.
   _now=$( cd "$PROJECT" && relay_git rev-list --count HEAD 2>/dev/null )
   _start=$(state_get commits_at_start)
-  if [ -n "$_start" ] && [ "${_now:-0}" -le "$_start" ]; then
-    relay_journal "complete.rejected" "no commits were made"; return 1
+  case "$_now"   in ''|*[!0-9]*) _now=0 ;; esac
+  case "$_start" in ''|*[!0-9]*) _start=0 ;; esac
+  if [ "$_now" -le "$_start" ]; then
+    relay_journal "complete.rejected" "no commits were made (start=$_start now=$_now)"; return 1
   fi
   if [ -n "$ACCEPT_CMD_JSON" ] && [ "$ACCEPT_CMD_JSON" != "null" ]; then
     relay_journal "acceptance.run" "$ACCEPT_CMD_JSON"
@@ -529,8 +539,15 @@ COST_TOTAL=$(state_get cost_total); [ -n "$COST_TOTAL" ] || COST_TOTAL=0
 NEXT_MODE=$(state_get next_mode); [ -n "$NEXT_MODE" ] || NEXT_MODE=normal
 NEXT_TIER=$(state_get next_tier); [ -n "$NEXT_TIER" ] || NEXT_TIER="$TIER_DEFAULT"
 
-[ -n "$(state_get commits_at_start)" ] || \
-  state_set commits_at_start "$( cd "$PROJECT" && relay_git rev-list --count HEAD 2>/dev/null )"
+# Recorded as a number even on a repository with no commits yet, where
+# `git rev-list --count HEAD` prints nothing: an empty value here used to
+# disable verify_complete's "did anything get committed" check entirely.
+if [ -z "$(state_get commits_at_start)" ]; then
+  _c0=$( cd "$PROJECT" && relay_git rev-list --count HEAD 2>/dev/null )
+  case "$_c0" in ''|*[!0-9]*) _c0=0 ;; esac
+  state_set commits_at_start "$_c0"
+  unset _c0
+fi
 
 relay_journal "supervisor.start" "run=$RUN_ID project=$PROJECT"
 
