@@ -1,0 +1,427 @@
+#!/usr/bin/env bash
+# test/bin/claude — zero-API-cost mock of the `claude` CLI for relay's test
+# harness. Placed first on PATH by test/run.sh so relay's supervisor (and any
+# script under test) talks to this instead of the real network binary.
+#
+# Behaviour is driven entirely by env vars (see docs at top of each section
+# below) plus RELAY_MOCK_SCRIPT, a comma-separated list of "behaviours" — one
+# consumed per invocation, the last one repeating once the list is exhausted.
+#
+# Target: bash 3.2.57 (macOS system bash). No associative arrays, no mapfile,
+# no ${var^^}, no globstar, no `wait -n`. No `timeout`, `flock`, `setsid`,
+# `stat`, `realpath`, `readlink -f`, `bc`, `python3`, `node`, `grep -P`,
+# `sed -i`, `date -d`. jq and git are available and used.
+#
+# Deliberately arg-parsed via shift (not bash arrays): bash 3.2's `set -u`
+# throws "unbound variable" on a bare "${arr[@]}" expansion for an array that
+# was built from zero elements (confirmed empirically against this exact
+# bash). Shift-based parsing over "$@" sidesteps the whole class of bug.
+set -u
+LC_ALL=C
+export LC_ALL
+IFS=$' \t\n'
+
+# ---------------------------------------------------------------------------
+# Required env.
+# ---------------------------------------------------------------------------
+: "${RELAY_MOCK_DIR:?RELAY_MOCK_DIR is required (path where the mock records state)}"
+mkdir -p "$RELAY_MOCK_DIR" 2>/dev/null || {
+  printf 'MOCK-FATAL: could not create RELAY_MOCK_DIR: %s\n' "$RELAY_MOCK_DIR" >&2
+  exit 97
+}
+
+RELAY_MOCK_SCRIPT="${RELAY_MOCK_SCRIPT:-work}"
+RELAY_MOCK_CTX="${RELAY_MOCK_CTX:-30}"
+RELAY_CTX_WINDOW="${RELAY_CTX_WINDOW:-200000}"
+RELAY_MOCK_HANG_SECS="${RELAY_MOCK_HANG_SECS:-120}"
+RELAY_MOCK_BG_SECS="${RELAY_MOCK_BG_SECS:-60}"
+
+ARGV_LOG="$RELAY_MOCK_DIR/argv.log"
+COUNTER_FILE="$RELAY_MOCK_DIR/invocation_count"
+ACTIONS_FILE="$RELAY_MOCK_DIR/actions"
+SESSION_IDS_FILE="$RELAY_MOCK_DIR/session_ids"
+FLAGS_FILE="$RELAY_MOCK_DIR/flags.jsonl"
+FLAGS_LAST_FILE="$RELAY_MOCK_DIR/flags-last.json"
+GIT_LOG_FILE="$RELAY_MOCK_DIR/git.log"
+
+# ---------------------------------------------------------------------------
+# 1. Record the full argv unconditionally, on every invocation, before any
+#    validation. Format: NUL-separated elements, newline between invocations.
+# ---------------------------------------------------------------------------
+{
+  _first=1
+  for _a in "$@"; do
+    if [ "$_first" -eq 1 ]; then _first=0; else printf '\0'; fi
+    printf '%s' "$_a"
+  done
+  printf '\n'
+} >> "$ARGV_LOG"
+unset _first _a
+
+# ---------------------------------------------------------------------------
+# 2. Forbidden-flag prescan. A dedicated pass over the whole argv (rather
+#    than interleaved with normal parsing) so this veto applies regardless of
+#    where the flag appears relative to anything else, including --version.
+# ---------------------------------------------------------------------------
+for _a in "$@"; do
+  case "$_a" in
+    --dangerously-skip-permissions|--bare|--no-session-persistence|--safe-mode)
+      printf 'MOCK-FATAL: relay must never pass %s\n' "$_a" >&2
+      exit 99
+      ;;
+  esac
+done
+unset _a
+
+# ---------------------------------------------------------------------------
+# 3. --version short-circuits everything else, including the required-flag
+#    check: querying the version is not a session run.
+# ---------------------------------------------------------------------------
+for _a in "$@"; do
+  case "$_a" in
+    --version)
+      printf '%s\n' "2.1.233 (Claude Code)"
+      exit 0
+      ;;
+  esac
+done
+unset _a
+
+# ---------------------------------------------------------------------------
+# 4. Main flag parse (shift-based; supports both `--flag value` and
+#    `--flag=value` forms).
+# ---------------------------------------------------------------------------
+session_id=""
+model=""
+permission_mode=""
+autocompact_present=0
+autocompact_value=""
+output_format=""
+max_budget_usd=""
+setting_sources_present=0
+setting_sources_value=""
+settings_present=0
+settings_value=""
+strict_mcp_present=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --session-id)        session_id="${2:-}";        shift 2 2>/dev/null || shift ;;
+    --session-id=*)      session_id="${1#*=}";        shift ;;
+    --model)             model="${2:-}";              shift 2 2>/dev/null || shift ;;
+    --model=*)           model="${1#*=}";              shift ;;
+    --permission-mode)   permission_mode="${2:-}";     shift 2 2>/dev/null || shift ;;
+    --permission-mode=*) permission_mode="${1#*=}";     shift ;;
+    --output-format)     output_format="${2:-}";        shift 2 2>/dev/null || shift ;;
+    --output-format=*)   output_format="${1#*=}";        shift ;;
+    --max-budget-usd)    max_budget_usd="${2:-}";        shift 2 2>/dev/null || shift ;;
+    --max-budget-usd=*)  max_budget_usd="${1#*=}";        shift ;;
+    --setting-sources)   setting_sources_present=1; setting_sources_value="${2:-}"; shift 2 2>/dev/null || shift ;;
+    --setting-sources=*) setting_sources_present=1; setting_sources_value="${1#*=}"; shift ;;
+    --settings)          settings_present=1; settings_value="${2:-}"; shift 2 2>/dev/null || shift ;;
+    --settings=*)        settings_present=1; settings_value="${1#*=}"; shift ;;
+    --strict-mcp-config) strict_mcp_present=1; shift ;;
+    --autocompact)
+      autocompact_present=1
+      case "${2:-}" in
+        ''|-*) autocompact_value="true"; shift ;;
+        *)     autocompact_value="$2"; shift 2 2>/dev/null || shift ;;
+      esac
+      ;;
+    --autocompact=*) autocompact_present=1; autocompact_value="${1#*=}"; shift ;;
+    -p) shift 2 2>/dev/null || shift ;;  # prompt text: consumed, not recorded (not in the required flag list)
+    *) shift ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# 5. Required-flag check. Catches a regression of the settings-trust /
+#    strict-mcp-config security fix (see docs/security.md).
+# ---------------------------------------------------------------------------
+if [ "$setting_sources_present" -ne 1 ]; then
+  printf 'MOCK-FATAL: missing required flag --setting-sources\n' >&2
+  exit 98
+fi
+if [ "$strict_mcp_present" -ne 1 ]; then
+  printf 'MOCK-FATAL: missing required flag --strict-mcp-config\n' >&2
+  exit 98
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Relay's own state dir. Required from here on: every behaviour below
+#    either writes into it or (noop/hang) is only meaningful in a scenario
+#    where it exists.
+# ---------------------------------------------------------------------------
+: "${RELAY_DIR:?RELAY_DIR is required (relay own state dir, distinct from RELAY_MOCK_DIR)}"
+mkdir -p "$RELAY_DIR" 2>/dev/null || {
+  printf 'MOCK-FATAL: could not create RELAY_DIR: %s\n' "$RELAY_DIR" >&2
+  exit 97
+}
+
+# ---------------------------------------------------------------------------
+# 7. Invocation counter. A file so it survives across separate process
+#    invocations (each `claude` call is a fresh process).
+# ---------------------------------------------------------------------------
+n=0
+[ -f "$COUNTER_FILE" ] && n="$(cat "$COUNTER_FILE" 2>/dev/null)"
+case "$n" in ''|*[!0-9]*) n=0 ;; esac
+n=$((n + 1))
+printf '%s' "$n" > "$COUNTER_FILE"
+
+# ---------------------------------------------------------------------------
+# 8. Pick this invocation's behaviour: the Nth comma-separated entry of
+#    RELAY_MOCK_SCRIPT, or the last entry once the list is exhausted.
+# ---------------------------------------------------------------------------
+behaviour=""
+_idx=0
+_old_ifs="$IFS"
+IFS=','
+for _entry in $RELAY_MOCK_SCRIPT; do
+  _idx=$((_idx + 1))
+  behaviour="$_entry"
+  [ "$_idx" -eq "$n" ] && break
+done
+IFS="$_old_ifs"
+unset _idx _entry _old_ifs
+[ -n "$behaviour" ] || behaviour="work"
+
+# ---------------------------------------------------------------------------
+# 9. Record action, session id, and parsed flags.
+# ---------------------------------------------------------------------------
+printf '%s %s\n' "$n" "$behaviour" >> "$ACTIONS_FILE"
+printf '%s %s\n' "$n" "$session_id" >> "$SESSION_IDS_FILE"
+
+_autocompact_present_json="false"
+[ "$autocompact_present" -eq 1 ] && _autocompact_present_json="true"
+_strict_mcp_json="false"
+[ "$strict_mcp_present" -eq 1 ] && _strict_mcp_json="true"
+_setting_sources_present_json="false"
+[ "$setting_sources_present" -eq 1 ] && _setting_sources_present_json="true"
+_settings_present_json="false"
+[ "$settings_present" -eq 1 ] && _settings_present_json="true"
+
+_flags_json="$(jq -nc \
+  --argjson n "$n" \
+  --arg behaviour "$behaviour" \
+  --arg session_id "$session_id" \
+  --arg model "$model" \
+  --arg permission_mode "$permission_mode" \
+  --arg autocompact "$autocompact_value" \
+  --argjson autocompact_present "$_autocompact_present_json" \
+  --arg output_format "$output_format" \
+  --arg max_budget_usd "$max_budget_usd" \
+  --arg setting_sources "$setting_sources_value" \
+  --argjson setting_sources_present "$_setting_sources_present_json" \
+  --arg settings "$settings_value" \
+  --argjson settings_present "$_settings_present_json" \
+  --argjson strict_mcp_config "$_strict_mcp_json" \
+  '{n:$n, behaviour:$behaviour, session_id:$session_id, model:$model,
+    permission_mode:$permission_mode, autocompact:$autocompact,
+    autocompact_present:$autocompact_present, output_format:$output_format,
+    max_budget_usd:$max_budget_usd, setting_sources:$setting_sources,
+    setting_sources_present:$setting_sources_present, settings:$settings,
+    settings_present:$settings_present, strict_mcp_config:$strict_mcp_config}' 2>/dev/null)"
+if [ -n "$_flags_json" ]; then
+  printf '%s\n' "$_flags_json" >> "$FLAGS_FILE"
+  printf '%s\n' "$_flags_json" > "$FLAGS_LAST_FILE"
+fi
+unset _autocompact_present_json _strict_mcp_json _flags_json
+unset _setting_sources_present_json _settings_present_json
+
+# ---------------------------------------------------------------------------
+# 10. Synthesise a transcript for this invocation, unconditionally (even for
+#     behaviours that go on to fail): a real session can burn context before
+#     hitting a usage limit or crashing, and relay's context guard needs to
+#     see that.
+# ---------------------------------------------------------------------------
+sid_for_file="$session_id"
+[ -n "$sid_for_file" ] || sid_for_file="mock-session-$n"
+
+_proj_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/mock"
+mkdir -p "$_proj_dir" 2>/dev/null
+transcript_file="$_proj_dir/${sid_for_file}.jsonl"
+
+case "$RELAY_MOCK_CTX" in ''|*[!0-9]*) RELAY_MOCK_CTX=30 ;; esac
+case "$RELAY_CTX_WINDOW" in ''|*[!0-9]*) RELAY_CTX_WINDOW=200000 ;; esac
+_sum=$(( RELAY_CTX_WINDOW * RELAY_MOCK_CTX / 100 ))
+_out_tok=100
+[ "$_sum" -lt 100 ] && _out_tok=0
+_in_tok=$(( _sum - _out_tok ))
+[ "$_in_tok" -ge 0 ] || _in_tok=0
+
+{
+  jq -nc --arg sid "$sid_for_file" \
+    '{type:"user", isSidechain:false, sessionId:$sid,
+      message:{role:"user", content:"continue the build"}}'
+  jq -nc --arg sid "$sid_for_file" \
+    '{type:"assistant", isSidechain:true, sessionId:$sid,
+      message:{role:"assistant", model:"mock-model",
+        content:[{type:"text", text:"decoy sidechain output"}],
+        usage:{input_tokens:9999999, cache_creation_input_tokens:0,
+               cache_read_input_tokens:0, output_tokens:9999999}}}'
+  jq -nc --arg sid "$sid_for_file" --argjson in "$_in_tok" --argjson out "$_out_tok" \
+    '{type:"assistant", isSidechain:false, sessionId:$sid,
+      message:{role:"assistant", model:"mock-model",
+        content:[{type:"text", text:"mock assistant turn"}],
+        usage:{input_tokens:$in, cache_creation_input_tokens:0,
+               cache_read_input_tokens:0, output_tokens:$out}}}'
+} > "$transcript_file" 2>/dev/null
+unset _proj_dir _sum _out_tok _in_tok
+
+# ---------------------------------------------------------------------------
+# Helpers used by the behaviours below.
+# ---------------------------------------------------------------------------
+git_commit() {
+  git -c user.name=mock -c user.email=mock@example.com add -A >>"$GIT_LOG_FILE" 2>&1
+  git -c user.name=mock -c user.email=mock@example.com commit -q -m "$1" >>"$GIT_LOG_FILE" 2>&1
+}
+
+write_handoff_valid() {
+  {
+    printf '## DONE\n'
+    printf -- '- invocation %s: mock behaviour %s completed\n\n' "$n" "$behaviour"
+    printf '## NEXT\n'
+    printf -- '- continue with the next mock step\n\n'
+    printf '<!-- relay:handoff-end -->\n'
+  } > "$RELAY_DIR/continue.md.tmp"
+  mv "$RELAY_DIR/continue.md.tmp" "$RELAY_DIR/continue.md"
+}
+
+write_handoff_partial() {
+  # Deliberately truncated mid-sentence, no ## NEXT, no end sentinel.
+  printf '## DONE\n- invocation %s: mock behaviour crash was cut off mid-sente' "$n" \
+    > "$RELAY_DIR/continue.md.tmp"
+  mv "$RELAY_DIR/continue.md.tmp" "$RELAY_DIR/continue.md"
+}
+
+write_handoff_malformed() {
+  printf 'this is not a structured handoff, just unstructured notes from invocation %s\n' "$n" \
+    > "$RELAY_DIR/continue.md.tmp"
+  mv "$RELAY_DIR/continue.md.tmp" "$RELAY_DIR/continue.md"
+}
+
+write_complete_md() {
+  {
+    printf '# Relay build complete\n\n'
+    printf '## Proof\n'
+    printf -- '- invocation: %s\n' "$n"
+    printf -- '- all planned steps done: true\n'
+    printf -- '- tests passing: true\n\n'
+    printf '<!-- relay:sealed -->\n'
+  } > "$RELAY_DIR/COMPLETE.md.tmp"
+  mv "$RELAY_DIR/COMPLETE.md.tmp" "$RELAY_DIR/COMPLETE.md"
+}
+
+write_complete_false_md() {
+  {
+    printf '# Relay build complete\n\n'
+    printf '## Proof\n'
+    printf -- '- invocation: %s\n' "$n"
+    printf -- '- all planned steps done: true\n'
+    printf -- '- tests passing: true\n'
+    printf -- '- step count: 999999 (fabricated; not reflective of actual repo state)\n\n'
+    printf '<!-- relay:sealed -->\n'
+  } > "$RELAY_DIR/COMPLETE.md.tmp"
+  mv "$RELAY_DIR/COMPLETE.md.tmp" "$RELAY_DIR/COMPLETE.md"
+}
+
+write_blocked_md() {
+  {
+    printf '# Relay build blocked\n\n'
+    printf '## Reason\n'
+    printf -- '- invocation %s requires human input to continue\n\n' "$n"
+    printf '<!-- relay:sealed -->\n'
+  } > "$RELAY_DIR/BLOCKED.md.tmp"
+  mv "$RELAY_DIR/BLOCKED.md.tmp" "$RELAY_DIR/BLOCKED.md"
+}
+
+# ---------------------------------------------------------------------------
+# 11. Dispatch the behaviour.
+# ---------------------------------------------------------------------------
+rc=0
+result_text=""
+
+case "$behaviour" in
+  work)
+    mkdir -p src
+    printf 'mock work output for invocation %s\n' "$n" > "src/step${n}.txt"
+    write_handoff_valid
+    git_commit "mock: work step $n"
+    result_text="work step $n committed"
+    ;;
+  complete)
+    write_complete_md
+    write_handoff_valid
+    git_commit "mock: complete at invocation $n"
+    result_text="build complete"
+    ;;
+  complete_false)
+    write_complete_false_md
+    git_commit "mock: complete_false at invocation $n"
+    result_text="build claims complete (fabricated)"
+    ;;
+  blocked)
+    write_blocked_md
+    git_commit "mock: blocked at invocation $n"
+    result_text="build blocked, needs human input"
+    ;;
+  noop)
+    result_text="no changes"
+    ;;
+  usagelimit)
+    printf 'Claude usage limit reached. Your limit will reset at 3pm.\n' >&2
+    rc=1
+    ;;
+  hang)
+    sleep "$RELAY_MOCK_HANG_SECS"
+    result_text="woke up after hang"
+    ;;
+  crash)
+    write_handoff_partial
+    rc=1
+    ;;
+  bgkill)
+    ( sleep "$RELAY_MOCK_BG_SECS" >/dev/null 2>&1 & )
+    write_handoff_valid
+    git_commit "mock: bgkill at invocation $n"
+    result_text="work committed, background job left running"
+    ;;
+  malformed)
+    write_handoff_malformed
+    git_commit "mock: malformed handoff at invocation $n"
+    result_text="handoff written (malformed)"
+    ;;
+  dirty)
+    printf 'uncommitted scratch output for invocation %s\n' "$n" > "uncommitted-${n}.txt"
+    write_handoff_valid
+    result_text="work left uncommitted"
+    ;;
+  badsession)
+    printf 'Error: session id %s already exists\n' "$session_id" >&2
+    rc=1
+    ;;
+  *)
+    printf 'MOCK-FATAL: unknown RELAY_MOCK_SCRIPT behaviour: %s\n' "$behaviour" >&2
+    rc=98
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 12. Emit final output. Only successful (rc=0) behaviours produce stdout;
+#     the stderr-error paths (usagelimit/crash/badsession/unknown) mimic a
+#     hard CLI-level failure with no result payload.
+# ---------------------------------------------------------------------------
+if [ "$rc" -eq 0 ]; then
+  if [ "$output_format" = "json" ]; then
+    jq -nc \
+      --arg result "$result_text" \
+      --arg sid "$sid_for_file" \
+      --argjson n "$n" \
+      '{type:"result", subtype:"success", is_error:false, result:$result,
+        session_id:$sid, num_turns:$n, total_cost_usd:0.01, permission_denials: []}'
+  else
+    printf '%s\n' "$result_text"
+  fi
+fi
+
+exit "$rc"
