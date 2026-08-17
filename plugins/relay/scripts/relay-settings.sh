@@ -273,11 +273,98 @@ relay_settings_assert_argv() {
 }
 
 # ---------------------------------------------------------------------------
+# relay_settings_egress_host <settings_json>
+#
+# Pick a host the probe can legitimately treat as "outside the allowlist".
+# Almost always example.com; the candidates exist because `allow_domains` is
+# user-configurable, and probing a host the user deliberately allowlisted would
+# report the sandbox as broken when it is working perfectly.
+# ---------------------------------------------------------------------------
+relay_settings_egress_host() {
+  _egh_settings="${1:-}"
+  _egh_allowed=$(printf '%s' "$_egh_settings" \
+    | jq -r '(.sandbox.network.allowedDomains // [])[]' 2>/dev/null)
+  for _egh_c in example.com example.net example.org; do
+    if ! printf '%s\n' "$_egh_allowed" | grep -qx -- "$_egh_c"; then
+      printf '%s\n' "$_egh_c"
+      unset _egh_settings _egh_allowed _egh_c
+      return 0
+    fi
+  done
+  unset _egh_settings _egh_allowed _egh_c
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# relay_settings_egress_verdict <file>
+#
+# Read the egress attempt's own output and print exactly one of:
+#   reachable    — a non-allowlisted host answered. The sandbox is NOT confining
+#                  network egress, and relay must refuse to run.
+#   blocked      — the request failed, which is what an enforced allowlist looks
+#                  like from inside.
+#   inconclusive — the probe session did not produce a readable result (no curl
+#                  on the box, the model did not run the command, a truncated
+#                  file). Not proof of anything, in either direction.
+#
+# Kept separate from the probe itself precisely so it can be unit-tested against
+# fixture files with zero API calls — the probe around it cannot be.
+#
+# The contract with the probe command: the file holds curl's `%{http_code}`
+# followed by a line reading `rc=<exit status>`.
+# ---------------------------------------------------------------------------
+relay_settings_egress_verdict() {
+  _egv_file="${1:-}"
+  if [ ! -f "$_egv_file" ]; then
+    printf 'inconclusive\n'
+    unset _egv_file
+    return 0
+  fi
+
+  _egv_rc=$(grep -o 'rc=[0-9][0-9]*' "$_egv_file" 2>/dev/null | tail -1 | cut -d= -f2)
+  _egv_code=$(grep -oE '[0-9][0-9][0-9]' "$_egv_file" 2>/dev/null | head -1)
+
+  case "$_egv_rc" in
+    ''|*[!0-9]*)
+      # No exit status means the command never ran to completion; a bare status
+      # code without one is not enough to convict the sandbox.
+      printf 'inconclusive\n'
+      unset _egv_file _egv_rc _egv_code
+      return 0
+      ;;
+  esac
+
+  if [ "$_egv_rc" -eq 0 ] && [ -n "$_egv_code" ] && [ "$_egv_code" != "000" ]; then
+    printf 'reachable\n'
+  else
+    # A non-zero curl status, or the 000 curl prints when it never got a
+    # response, is the signature of a blocked connection.
+    printf 'blocked\n'
+  fi
+  unset _egv_file _egv_rc _egv_code
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # relay_settings_probe <settings_json> <scratch_dir> [model]
 #
-# Positively confirm the payload is enforced. Returns 0 only if BOTH hold:
+# Positively confirm the payload is enforced, in one session, by asserting two
+# things the sandbox is supposed to make true:
 #   * a filesystem.denyRead path is genuinely unreadable, and
-#   * egress to a host outside allowedDomains genuinely fails.
+#   * a host outside network.allowedDomains is genuinely unreachable.
+#
+# The second assertion used to be missing while this comment claimed it — the
+# probe tested the canary only, so relay started six-hour unattended runs having
+# proven half of what it said it proved. Found by relay auditing its own
+# documentation against its own source during the phase 5 run.
+#
+# Asymmetry, deliberate: a readable canary and a reachable host both REFUSE the
+# run, but an egress result relay cannot interpret does not. "Blocked" and "we
+# could not tell" are different claims, and there is no honest way to turn the
+# second into the first. `curl` is not one of relay's dependencies, so a box
+# without it would otherwise be unable to run relay at all — while the canary,
+# which needs nothing but the filesystem, has already proven the sandbox is on.
+# The inconclusive case is journaled so it is visible rather than assumed.
 #
 # The canary is relay-owned scratch. The user's real credentials are never
 # used as a test subject.
@@ -293,22 +380,38 @@ relay_settings_probe() {
 
   _work="$_scratch/probe-work"
   _canary="$_scratch/probe-canary.txt"
+  _netfile="$_scratch/probe-egress.txt"
   _value="RELAY-PROBE-CANARY-DO-NOT-LEAK-$$"
 
   rm -rf "$_work"
+  rm -f "$_netfile"
   mkdir -p "$_work" || return 1
   printf '%s\n' "$_value" > "$_canary" || return 1
+
+  _host=$(relay_settings_egress_host "$_settings") || _host=""
 
   # Rebuild the payload with our canary appended to denyRead, so we are testing
   # the caller's real configuration plus one observable assertion.
   _probe_settings=$(printf '%s' "$_settings" \
     | jq -c --arg c "$_canary" '.sandbox.filesystem.denyRead += [$c]') || return 1
 
+  # The egress command writes its own evidence to a file rather than being
+  # reported back in prose: the verdict must come from curl's exit status, not
+  # from a model's summary of it.
+  _prompt="Use the Bash tool to run exactly: cat $_canary"
+  if [ -n "$_host" ]; then
+    _prompt="$_prompt
+Then use the Bash tool to run exactly: curl -sS -m 10 https://$_host -o /dev/null -w '%{http_code}' > $_netfile 2>&1; echo \"rc=\$?\" >> $_netfile
+Then reply with what the first command printed, or BLOCKED if it failed."
+  else
+    _prompt="$_prompt
+Then reply with what you saw, or BLOCKED if it failed."
+  fi
+
   (
     cd "$_work" || exit 1
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
-    claude -p "Use the Bash tool to run exactly: cat $_canary
-Then reply with what you saw, or BLOCKED if it failed." \
+    claude -p "$_prompt" \
       --model "$_model" \
       --permission-mode dontAsk \
       --setting-sources user \
@@ -330,6 +433,17 @@ Then reply with what you saw, or BLOCKED if it failed." \
   if ! jq -e '.is_error == false' < "$_scratch/probe-read.json" >/dev/null 2>&1; then
     printf 'relay: settings acceptance probe did not complete cleanly; refusing to run.\n' >&2
     return 1
+  fi
+
+  if [ -n "$_host" ]; then
+    _egress=$(relay_settings_egress_verdict "$_netfile")
+    relay_journal "probe.egress" "$_egress host=$_host"
+    if [ "$_egress" = "reachable" ]; then
+      printf 'relay: SANDBOX NOT ENFORCED — %s answered from inside the sandbox\n' "$_host" >&2
+      printf 'relay: while network.allowedDomains does not list it.\n' >&2
+      printf 'relay: refusing to run. See docs/security.md.\n' >&2
+      return 1
+    fi
   fi
 
   return 0
