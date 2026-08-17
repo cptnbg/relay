@@ -128,6 +128,8 @@ test_timeout() {
   # waits on it; the whole group must die when the 2s deadline fires.
   local marker gpid
   marker="$grp/grandchild.pid"
+  # shellcheck disable=SC2016 # single-quoted intentionally: $! and $1 must
+  # expand inside the spawned bash -c, not in this outer shell.
   relay_timeout 2 bash -c 'sleep 30 & echo $! > "$1"; wait' _ "$marker"
 
   if [ -s "$marker" ]; then
@@ -220,6 +222,10 @@ test_lock() {
       fail "lock_unlock_refuses_other_pid" "lock dir was removed despite pid mismatch"
     fi
   fi
+  # shellcheck disable=SC2034 # RELAY_LOCK_HELD is a global from the sourced
+  # library (relay_unlock's default arg); shellcheck can't see that use
+  # because the source is dev/null-stubbed above. This reset prevents state
+  # leaking into later test functions.
   RELAY_LOCK_HELD=""
 
   rm -rf "$grp"

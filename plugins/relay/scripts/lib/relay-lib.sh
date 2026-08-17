@@ -349,7 +349,7 @@ relay_uuid() {
   _ru_val=""
 
   if command -v uuidgen >/dev/null 2>&1; then
-    _ru_val="$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z')"
+    _ru_val="$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     case "$_ru_val" in
       [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
         printf '%s\n' "$_ru_val"
@@ -360,7 +360,7 @@ relay_uuid() {
   fi
 
   if [ -r /proc/sys/kernel/random/uuid ]; then
-    _ru_val="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr 'A-Z' 'a-z')"
+    _ru_val="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     case "$_ru_val" in
       [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
         printf '%s\n' "$_ru_val"
