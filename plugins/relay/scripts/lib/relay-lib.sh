@@ -503,6 +503,54 @@ relay_atomic_write() {
 }
 
 # ===========================================================================
+# relay_prune_sessions <state_dir> [keep] [max_age_days]
+#
+# Session logs are the bulky, sensitive part of a run's state: they hold
+# whatever the agent read. The README says they are pruned, so they have to
+# actually be pruned — an unbounded, unredacted-by-nature directory that a
+# document claims is bounded is worse than one nobody promised anything about.
+#
+# Deletes session logs beyond the newest `keep` (default 5) AND any older than
+# `max_age_days` (default 7), whichever removes more. Touches ONLY sessions/:
+# journal.log is the audit trail, handoffs/ is the hash chain, and RUN.md,
+# state.json and any run-scoped notes are load-bearing across sessions.
+#
+# Never fails the caller — pruning is hygiene, not a gate. `ls -t` rather than
+# `stat` (whose flags differ between macOS and Linux) and `find -mtime`, both
+# POSIX. Returns 0 always.
+# ===========================================================================
+relay_prune_sessions() {
+  _rps_state="${1:-}"
+  _rps_keep="${2:-5}"
+  _rps_days="${3:-7}"
+  case "$_rps_keep" in ''|*[!0-9]*) _rps_keep=5 ;; esac
+  case "$_rps_days" in ''|*[!0-9]*) _rps_days=7 ;; esac
+  _rps_dir="$_rps_state/sessions"
+  [ -d "$_rps_dir" ] || { unset _rps_state _rps_keep _rps_days _rps_dir; return 0; }
+
+  # Age-based first. -mtime +N is "strictly more than N days old".
+  find "$_rps_dir" -maxdepth 1 -type f -name '*.log' -mtime "+$_rps_days" \
+    -exec rm -f -- {} + 2>/dev/null
+  find "$_rps_dir" -maxdepth 1 -type f -name '*.log.err' -mtime "+$_rps_days" \
+    -exec rm -f -- {} + 2>/dev/null
+
+  # Then count-based, newest first. Each session owns a .log and a .log.err, so
+  # the keep count is applied to the .log files and the sibling goes with it
+  # (the `*.log` glob does not match `*.log.err`, so the count is not doubled).
+  # The counter lives inside the pipeline's subshell, which is fine because
+  # nothing outside the loop reads it.
+  _rps_n=0
+  ls -t "$_rps_dir"/*.log 2>/dev/null | while IFS= read -r _rps_f; do
+    _rps_n=$((_rps_n + 1))
+    [ "$_rps_n" -le "$_rps_keep" ] && continue
+    rm -f -- "$_rps_f" "$_rps_f.err" 2>/dev/null
+  done
+
+  unset _rps_state _rps_keep _rps_days _rps_dir _rps_n _rps_f
+  return 0
+}
+
+# ===========================================================================
 # relay_notify <title> <message>
 # Never fails (always returns 0). Never blocks more than 5s per attempt.
 # Sanitizes both args before use (repo text is untrusted input).

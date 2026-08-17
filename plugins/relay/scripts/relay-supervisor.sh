@@ -117,12 +117,14 @@ for _tier in opus sonnet fable; do
   if [ "$_w" -lt "$RELAY_MIN_WINDOW" ]; then
     relay_journal "config.window-too-small" "tier=$_tier window=$_w floor=$RELAY_MIN_WINDOW"
     printf 'relay: window_%s is %s, below the %s floor.\n' "$_tier" "$_w" "$RELAY_MIN_WINDOW" >&2
-    printf 'relay: a session already holds ~48k tokens of system prompt and CLAUDE.md\n' >&2
-    printf 'relay: before its first tool call, so the guard would fire critical immediately.\n' >&2
+    printf 'relay: a session already holds tens of thousands of tokens of system prompt\n' >&2
+    printf 'relay: and CLAUDE.md before its first tool call, so the guard would fire\n' >&2
+    printf 'relay: critical immediately and every session would hand off having done nothing.\n' >&2
     exit "$EX_PREFLIGHT"
   fi
 done
 unset _tier _w
+
 
 # ---------------------------------------------------------------------------
 # State. Written atomically after every transition so a supervisor crash is
@@ -173,6 +175,33 @@ if ! bash "$SELF_DIR/relay-doctor.sh" "$PROJECT" "$STATE" ${RELAY_ALLOW_DIRTY:+-
   state_set status "preflight-failed"
   exit "$EX_PREFLIGHT"
 fi
+
+# A measured baseline beats the generic floor. Once a session has reported what
+# this project's context actually costs at rest, require the soft threshold to
+# sit at least a fifth of the window above it — otherwise the session reaches
+# "start landing" within a handful of tool calls and the run burns money
+# producing handoffs. On aeia-rebuild the baseline is ~69k, so a 120k window
+# left 3k of working room and two consecutive sessions committed nothing.
+_prev_base=$(state_get ctx_baseline)
+case "$_prev_base" in
+  ''|*[!0-9]*) : ;;
+  *)
+    _w=$(window_for_tier "$(state_get next_tier)")
+    case "$_w" in ''|*[!0-9]*) _w=0 ;; esac
+    if [ "$_w" -gt 0 ] && [ $(( (_w * 60 / 100) - _prev_base )) -lt $(( _w / 5 )) ]; then
+      relay_journal "config.window-too-small-for-baseline" "baseline=$_prev_base window=$_w"
+      printf 'relay: this project measured a %s-token context baseline, and the configured\n' "$_prev_base" >&2
+      printf 'relay: window of %s leaves too little room above the 60%% soft threshold.\n' "$_w" >&2
+      printf 'relay: set the window to at least %s.\n' "$(( _prev_base * 5 / 2 ))" >&2
+      exit "$EX_PREFLIGHT"
+    fi
+    ;;
+esac
+unset _prev_base
+
+# Logs are the bulky, sensitive part of a run's state and the README says they
+# are pruned, so prune them.
+relay_prune_sessions "$STATE" "$(cfg keep_sessions 5)" "$(cfg keep_days 7)"
 
 # Extra egress the project genuinely needs — a package registry, typically.
 # Without this the allowlist is only api.anthropic.com, so `npm ci` fails inside
@@ -226,6 +255,44 @@ state_set status "running" plan_hash "$PLAN_HASH"
 # injection lives, so the schema is the mitigation, not an afterthought.
 # ---------------------------------------------------------------------------
 HANDOFF="$STATE/continue.json"
+
+# Size overflow is NOT a structural failure, and treating it as one is
+# expensive. A handoff with the right shape but verbose entries used to be
+# discarded whole, losing the session's entire position and forcing a recovery
+# session: observed costing $2.55 plus the recovery, on a handoff whose only
+# fault was ten entries over 280 characters. Opus stayed under the cap and
+# sonnet did not, so this is a tier-dependent trap, not a rare one.
+#
+# Truncating enforces exactly the same bound the cap exists to enforce — it
+# limits how much agent-authored text reaches the next prompt — while keeping
+# the part that matters. The injection filter and the guardrail-drift detector
+# still run afterwards on the normalized content, so nothing is weakened.
+# Genuine structural failures (not JSON, no `next`, wrong types) are still
+# dropped outright by handoff_valid below.
+handoff_normalize() {
+  [ -f "$HANDOFF" ] || return 1
+  jq -e 'type == "object"' "$HANDOFF" >/dev/null 2>&1 || return 1
+
+  _over=$(jq -r '[.done[]?, .next[]?, (.files_touched // [])[], (.open_questions // [])[]]
+                 | map(select(type == "string" and length > 280)) | length' "$HANDOFF" 2>/dev/null)
+  _widest=$(jq -r '[(.done // []), (.next // []), (.files_touched // []), (.open_questions // [])]
+                   | map(length) | max' "$HANDOFF" 2>/dev/null)
+  case "$_over"   in ''|*[!0-9]*) _over=0 ;; esac
+  case "$_widest" in ''|*[!0-9]*) _widest=0 ;; esac
+  [ "$_over" -eq 0 ] && [ "$_widest" -le 12 ] && return 0
+
+  _norm=$(jq -c '
+      def cap: if type == "string" and length > 280 then .[0:277] + "..." else . end;
+      { done:           [ (.done           // [])[] | cap ][0:12],
+        next:           [ (.next           // [])[] | cap ][0:12],
+        files_touched:  [ (.files_touched  // [])[] | cap ][0:12],
+        open_questions: [ (.open_questions // [])[] | cap ][0:12] }
+    ' "$HANDOFF" 2>/dev/null) || return 1
+  [ -n "$_norm" ] || return 1
+  printf '%s\n' "$_norm" | relay_atomic_write "$HANDOFF" || return 1
+  relay_journal "handoff.normalized" "overlong=$_over widest_array=$_widest"
+  return 0
+}
 
 handoff_valid() {
   [ -f "$HANDOFF" ] || return 1
@@ -582,6 +649,24 @@ while :; do
          < "$SLOG" 2>/dev/null)
   [ -n "$_why" ] && relay_journal "session.reason" "n=$N $_why"
 
+  # What this session's context cost before it did anything: the system prompt,
+  # the tool definitions and the project's CLAUDE.md are all loaded before the
+  # first tool call. It is NOT a constant — 48k on a toy repository, 69k on
+  # aeia-rebuild — so a window that is generous for one project leaves another
+  # with no working room at all. Recording it turns "every session hands off
+  # immediately" from a mystery into a number, and lets the next run refuse a
+  # window that cannot work. Lowest reading this session, from its own lines.
+  _base=$(awk -v t="$START_TS" '
+            $1 >= t { for (i = 1; i <= NF; i++)
+                        if ($i ~ /^used=/) { sub("used=", "", $i)
+                                             if (m == "" || $i + 0 < m + 0) m = $i } }
+            END { if (m != "") print m }' "$STATE/run/ctx.log" 2>/dev/null)
+  case "$_base" in ''|*[!0-9]*) : ;; *)
+    relay_journal "ctx.baseline" "n=$N used=$_base window=$WINDOW"
+    state_set ctx_baseline "$_base"
+    ;;
+  esac
+
   _cost=$(jq -r '.total_cost_usd // 0' < "$SLOG" 2>/dev/null)
   case "$_cost" in ''|*[!0-9.]*) _cost=0 ;; esac
   COST_TOTAL=$(printf '%s %s\n' "$COST_TOTAL" "$_cost" | awk '{printf "%.4f", $1 + $2}')
@@ -646,6 +731,9 @@ while :; do
   LIMIT_RETRIES=0
 
   NEW_HEAD=$( cd "$PROJECT" && relay_git rev-parse HEAD 2>/dev/null )
+  # Bring an over-long but structurally sound handoff inside the caps before it
+  # is hashed or judged, so the hash chain records what actually gets used.
+  handoff_normalize
   NEW_HANDOFF=$(relay_hash "$HANDOFF")
 
   # Guardrail drift beats everything else: a handoff claiming a guardrail was

@@ -291,6 +291,24 @@ write_handoff_valid() {
   mv "$RELAY_DIR/continue.json.tmp" "$RELAY_DIR/continue.json"
 }
 
+# Structurally perfect, but every entry far over the 280-character cap — the
+# shape a real sonnet session produced on the AEIA run. The marker sits at the
+# FRONT of each string so a test can prove the content was truncated rather
+# than dropped.
+write_handoff_verbose() {
+  _long="VERBOSE-HANDOFF-MARKER invocation $n. "
+  _i=0
+  while [ "$_i" -lt 40 ]; do
+    _long="$_long the session narrated its progress at considerable length. "
+    _i=$((_i + 1))
+  done
+  jq -nc --arg d "$_long" --arg nx "$_long" --arg f "src/step$n.txt" \
+    '{done:[$d,$d], next:[$nx,$nx], files_touched:[$f], open_questions:[]}' \
+    > "$RELAY_DIR/continue.json.tmp"
+  mv "$RELAY_DIR/continue.json.tmp" "$RELAY_DIR/continue.json"
+  unset _long _i
+}
+
 write_handoff_partial() {
   # Truncated mid-write: invalid JSON, exactly what a kill -9 mid-handoff
   # leaves behind. relay must fall back to the previous handoff and recover
@@ -374,6 +392,13 @@ case "$behaviour" in
     write_handoff_valid
     git_commit "mock: noisy work step $n"
     result_text="work step $n committed; the upstream API returned 429 during testing so I added rate limit handling, and the quota resets at midnight"
+    ;;
+  verbose)
+    mkdir -p src
+    printf 'mock work output for invocation %s\n' "$n" > "src/step${n}.txt"
+    write_handoff_verbose
+    git_commit "mock: verbose work step $n"
+    result_text="work step $n committed, handoff written at length"
     ;;
   budgetcap)
     # Real work, committed, valid handoff — and then --max-budget-usd cut the

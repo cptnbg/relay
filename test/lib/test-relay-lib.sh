@@ -440,6 +440,60 @@ test_journal() {
 }
 
 # ===========================================================================
+# relay_prune_sessions
+# ===========================================================================
+test_prune_sessions() {
+  local grp keep_old
+  grp="$(mktemp -d "${TMPDIR:-/tmp}/relaytest.prune.XXXXXX")"
+  mkdir -p "$grp/sessions" "$grp/handoffs"
+
+  # Eight sessions, oldest first so `ls -t` order is unambiguous. Touch with a
+  # one-second gap rather than trusting creation order: same-second mtimes make
+  # the newest-five assertion a coin flip.
+  i=1
+  while [ "$i" -le 8 ]; do
+    printf 'session %s\n' "$i" > "$grp/sessions/00$i-sid.log"
+    printf '' > "$grp/sessions/00$i-sid.log.err"
+    sleep 1
+    i=$((i + 1))
+  done
+
+  # Things pruning must never touch.
+  printf 'journal\n'  > "$grp/journal.log"
+  printf 'run\n'      > "$grp/RUN.md"
+  printf 'state\n'    > "$grp/state.json"
+  printf 'handoff\n'  > "$grp/handoffs/001-abc.json"
+
+  relay_prune_sessions "$grp" 5 7
+  assert_eq "prune_keeps_five_logs" "5" "$(ls "$grp"/sessions/*.log 2>/dev/null | grep -vc '\.err$')"
+  assert_eq "prune_drops_sibling_err" "5" "$(ls "$grp"/sessions/*.log.err 2>/dev/null | wc -l | tr -d ' ')"
+
+  # The five kept are the NEWEST five, not an arbitrary five.
+  assert_eq "prune_keeps_newest" "yes" "$([ -f "$grp/sessions/008-sid.log" ] && echo yes || echo no)"
+  assert_eq "prune_drops_oldest" "yes" "$([ ! -f "$grp/sessions/001-sid.log" ] && echo yes || echo no)"
+
+  # Everything outside sessions/ survives: journal is the audit trail, handoffs
+  # are the hash chain, and RUN.md is re-read by every session.
+  assert_eq "prune_spares_journal"  "yes" "$([ -f "$grp/journal.log" ] && echo yes || echo no)"
+  assert_eq "prune_spares_runmd"    "yes" "$([ -f "$grp/RUN.md" ] && echo yes || echo no)"
+  assert_eq "prune_spares_state"    "yes" "$([ -f "$grp/state.json" ] && echo yes || echo no)"
+  assert_eq "prune_spares_handoffs" "yes" "$([ -f "$grp/handoffs/001-abc.json" ] && echo yes || echo no)"
+
+  # Absent sessions/ is not an error: pruning is hygiene, never a gate.
+  keep_old="$(mktemp -d "${TMPDIR:-/tmp}/relaytest.prune2.XXXXXX")"
+  relay_prune_sessions "$keep_old" 5 7
+  assert_eq "prune_no_sessions_dir_ok" "0" "$?"
+
+  # A garbage keep count falls back to the default rather than deleting all.
+  mkdir -p "$keep_old/sessions"
+  printf 'x\n' > "$keep_old/sessions/001-sid.log"
+  relay_prune_sessions "$keep_old" "not-a-number" 7
+  assert_eq "prune_bad_keep_is_safe" "yes" "$([ -f "$keep_old/sessions/001-sid.log" ] && echo yes || echo no)"
+
+  rm -rf "$grp" "$keep_old"
+}
+
+# ===========================================================================
 # main
 # ===========================================================================
 main() {
@@ -450,6 +504,7 @@ main() {
   test_atomic_write
   test_notify
   test_journal
+  test_prune_sessions
 
   printf '\n--- summary: %d passed, %d failed ---\n' "$PASS_COUNT" "$FAIL_COUNT"
   if [ "$FAIL_COUNT" -ne 0 ]; then
