@@ -77,15 +77,28 @@ blocked read cannot distinguish 'hook never fired' from 'nothing to fire on'.)" 
 rc=$?
 
 fail=0
-report() { # label ok_condition_result
+report() { # label  0|1 (0 = pass)
   if [ "$2" = "0" ]; then printf 'ok   %s\n' "$1"; else printf 'FAIL %s\n' "$1"; fail=1; fi
 }
+# Each check captures its own status into a named variable first. Passing `$?`
+# straight into a function reads as "the thing above", but by then it may have
+# been overwritten — and where two checks chain (a grep followed by a test of
+# its result) it becomes genuinely ambiguous which command it refers to.
+check() { # label  command...
+  local _label="$1"; shift
+  if "$@"; then report "$_label" 0; else report "$_label" 1; fi
+}
+check_not() { # label  command...   (passes when the command FAILS)
+  local _label="$1"; shift
+  if "$@"; then report "$_label" 1; else report "$_label" 0; fi
+}
 
-[ "$rc" -eq 0 ]; report "session completed (rc=$rc)" $?
-[ -f "$STATE/hook-fired" ]; report "exec-form hook fired via --settings (path with space)" $?
-grep -qF "$CANARY_VALUE" "$SCRATCH/integ/out.json" "$SCRATCH/integ/out.err" 2>/dev/null
-[ $? -ne 0 ]; report "sandbox denyRead enforced (canary not leaked)" $?
-jq -e '.is_error == false' < "$SCRATCH/integ/out.json" >/dev/null 2>&1; report "result reports success" $?
+check     "session completed (rc=$rc)"                                   test "$rc" -eq 0
+check     "exec-form hook fired via --settings (path with space)"        test -f "$STATE/hook-fired"
+check_not "sandbox denyRead enforced (canary not leaked)" \
+          grep -qF "$CANARY_VALUE" "$SCRATCH/integ/out.json" "$SCRATCH/integ/out.err"
+result_ok() { jq -e '.is_error == false' "$1" >/dev/null 2>&1; }
+check     "result reports success"  result_ok "$SCRATCH/integ/out.json"
 
 if [ -f "$STATE/hook-payload.json" ]; then
   printf 'hook stdin keys: %s\n' \
