@@ -509,8 +509,18 @@ while :; do
 
   N=$((N + 1))
   MODE="$NEXT_MODE"
-  if [ "$REVIEW_EVERY" -gt 0 ] && [ $((N % REVIEW_EVERY)) -eq 0 ] && [ "$MODE" = "normal" ]; then
+  # Measured from the LAST review, not from N modulo the interval. The modulo
+  # form is stateless, so lowering review_every between runs re-lands a review
+  # on the very next session — observed on the AEIA run, where session 8 audited
+  # and session 9 was scheduled to audit again, against a handoff that said in
+  # so many words "do not re-audit, build the remaining steps". An audit that
+  # repeats the previous audit costs a session and learns nothing.
+  _last_review=$(state_get last_review_n); [ -n "$_last_review" ] || _last_review=0
+  case "$_last_review" in ''|*[!0-9]*) _last_review=0 ;; esac
+  if [ "$REVIEW_EVERY" -gt 0 ] && [ "$MODE" = "normal" ] \
+     && [ $((N - _last_review)) -ge "$REVIEW_EVERY" ]; then
     MODE=review
+    state_set last_review_n "$N"
   fi
 
   TIER="$NEXT_TIER"
