@@ -69,7 +69,20 @@ REVIEW_EVERY=$(cfg review_every 5)
 ON_LIMIT=$(cfg on_limit wait)
 MAX_LIMIT_RETRIES=$(cfg max_usage_retries 20)
 PLAN_PATH=$(cfg plan_path "$PROJECT/plan.md")
+# The acceptance command is an argv ARRAY, never a shell string: if a shell is
+# wanted the user writes ["bash","-lc",...] and sees it at approval time. The
+# shape is enforced here rather than assumed — a string like "npm test" would
+# otherwise have to be split by guessing where its argument boundaries are.
 ACCEPT_CMD_JSON=$(jq -c '.acceptance_cmd // empty' "$STATE/exec.json" 2>/dev/null)
+if [ -n "$ACCEPT_CMD_JSON" ] && [ "$ACCEPT_CMD_JSON" != "null" ]; then
+  if ! printf '%s' "$ACCEPT_CMD_JSON" | jq -e '
+        type == "array" and length > 0 and length <= 32
+        and all(.[]; type == "string" and length > 0 and length <= 512)' >/dev/null 2>&1; then
+    relay_journal "exec.acceptance-cmd-invalid" "$(printf '%s' "$ACCEPT_CMD_JSON" | head -c 200)"
+    printf 'relay: exec.json acceptance_cmd is not a usable argv array\n' >&2
+    exit "$EX_PREFLIGHT"
+  fi
+fi
 
 # Test hooks: the suite compresses time so cases run in seconds.
 SESSION_TIMEOUT="${RELAY_SESSION_TIMEOUT:-$SESSION_TIMEOUT}"
@@ -214,6 +227,43 @@ handoff_guardrail_drift() {
 }
 
 # ---------------------------------------------------------------------------
+# Usage-limit detection.
+#
+# This must NOT be a text search over the whole session log. That log's
+# `result` field is the model's own final message, so a session that merely
+# mentions rate limits — or whose session uuid happens to contain the digits
+# 429, which is how this bug was found — gets discarded and re-run forever.
+# Worse, anything that can influence what the model writes (i.e. repository
+# content) would gain a lever on the supervisor's control flow.
+#
+# Only the transport envelope is trusted:
+#   * a result record with is_error false is NOT a usage limit, whatever its
+#     prose says. This single rule is what makes the predicate sound;
+#   * api_error_status 429 is, unambiguously;
+#   * an errored result is judged on its own error fields, which the CLI
+#     writes, not the model;
+#   * if no parsable envelope exists at all — the CLI died before emitting one
+#     — claude's own stderr is the only evidence left, so it is consulted.
+LIMIT_RE='usage limit|rate.?limit|overloaded|too many requests|quota|limit will reset|resets? at|(status|code|http)[^0-9]{0,6}429'
+
+# `.[0] // {}` keeps this total: no result record yields an empty object rather
+# than a jq error, which the caller reads as "no envelope".
+LIMIT_JQ='[ .[] | select(type == "object" and .type == "result") ] | (.[0] // {})'
+
+usage_limited() { # 1=session stdout log  2=session stderr log
+  if [ "$(jq -rs "$LIMIT_JQ"' | has("type")' < "$1" 2>/dev/null)" = "true" ]; then
+    [ "$(jq -rs "$LIMIT_JQ"' | (.api_error_status // "") | tostring' < "$1" 2>/dev/null)" = "429" ] && return 0
+    [ "$(jq -rs "$LIMIT_JQ"' | (.is_error // false) | tostring' < "$1" 2>/dev/null)" = "true" ] || return 1
+    jq -rs "$LIMIT_JQ"' | [(.subtype // ""), (.result // ""), (.stop_reason // ""),
+                           (.terminal_reason // "")] | join(" ")' < "$1" 2>/dev/null \
+      | head -c 8192 | grep -qiE "$LIMIT_RE" && return 0
+    return 1
+  fi
+  grep -qiE "$LIMIT_RE" "$2" 2>/dev/null && return 0
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # Prompt assembly: byte-identical stable prefix (cacheable across the whole
 # chain) followed by the volatile per-session tail.
 # ---------------------------------------------------------------------------
@@ -319,9 +369,33 @@ verify_complete() {
   fi
   if [ -n "$ACCEPT_CMD_JSON" ] && [ "$ACCEPT_CMD_JSON" != "null" ]; then
     relay_journal "acceptance.run" "$ACCEPT_CMD_JSON"
-    if ! ( cd "$PROJECT" && printf '%s' "$ACCEPT_CMD_JSON" | jq -r '.[]' \
-           | ( _args=""; while IFS= read -r _x; do _args="$_args \"$_x\""; done
-               eval relay_timeout 600 $_args ) ) >>"$STATE/run/acceptance.log" 2>&1; then
+    # Loaded into positional parameters and executed directly. An earlier
+    # version re-quoted the elements into one string and `eval`'d it, which
+    # silently handed a shell to any element containing a quote — destroying
+    # the property that wanting a shell means writing ["bash","-lc",...] where
+    # a human sees it while approving.
+    #
+    # Elements cross the pipe as one JSON string per line (`jq -c`), not raw
+    # (`jq -r`): a raw element containing a newline would be read back as two
+    # arguments. JSON encoding cannot contain a literal newline, so the line
+    # split is unambiguous. jq refuses to emit a NUL byte, so NUL-delimiting —
+    # the usual answer — is not available here. The trailing `x` survives the
+    # command substitution's newline stripping and is then removed, so an
+    # element that genuinely ends in a newline keeps it.
+    #
+    # stdin is closed before exec so an acceptance command can never consume
+    # the element stream or block waiting on a terminal.
+    if ! ( printf '%s' "$ACCEPT_CMD_JSON" | jq -c '.[]' | (
+             set --
+             while IFS= read -r _line; do
+               _el=$(printf '%s' "$_line" | jq -r '. + "x"') || exit 1
+               set -- "$@" "${_el%x}"
+             done
+             [ "$#" -gt 0 ] || exit 1
+             cd "$PROJECT" || exit 1
+             exec < /dev/null
+             relay_timeout 600 "$@"
+           ) ) >>"$STATE/run/acceptance.log" 2>&1; then
       relay_journal "complete.rejected" "acceptance command failed"
       return 1
     fi
@@ -483,7 +557,7 @@ while :; do
 
   # Usage limits are not failures: they are weather. They must not consume the
   # session budget, the stall counter, or the fast-fail streak.
-  if grep -qiE 'usage limit|rate.?limit|overloaded|429|resets? at' "$SLOG" "$SLOG.err" 2>/dev/null; then
+  if usage_limited "$SLOG" "$SLOG.err"; then
     LIMIT_RETRIES=$((LIMIT_RETRIES + 1))
     if [ "$ON_LIMIT" != "wait" ] || [ "$LIMIT_RETRIES" -gt "$MAX_LIMIT_RETRIES" ]; then
       relay_journal "usage_limit.halt" "retries=$LIMIT_RETRIES"

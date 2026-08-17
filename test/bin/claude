@@ -357,6 +357,18 @@ case "$behaviour" in
     git_commit "mock: work step $n"
     result_text="work step $n committed"
     ;;
+  noisy)
+    # A completely successful session whose own final message talks about rate
+    # limits and contains the digits 429. Nothing here is a usage limit, and
+    # relay must not treat it as one: `result` is the MODEL's text, so anything
+    # that can influence the model (repository content included) could
+    # otherwise steer the supervisor's control flow.
+    mkdir -p src
+    printf 'mock work output for invocation %s\n' "$n" > "src/step${n}.txt"
+    write_handoff_valid
+    git_commit "mock: noisy work step $n"
+    result_text="work step $n committed; the upstream API returned 429 during testing so I added rate limit handling, and the quota resets at midnight"
+    ;;
   complete)
     write_complete_md
     write_handoff_valid
