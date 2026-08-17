@@ -67,47 +67,55 @@ session is launched:
 8. Validate any extra sandbox egress domains as a plain hostname list
    (`:206-225`).
 9. Build the `--settings` JSON payload (`:227-228`, see §7) and **prove** the
-   filesystem half of the sandbox it describes is actually enforced by running
-   a real probe session against a relay-owned canary file, unless a cached
-   fingerprint for the same payload + CLI version already proved it
-   (`:230-248`). `relay_settings_probe()` (`relay-settings.sh:289-336`) appends
-   the canary path to `sandbox.filesystem.denyRead`, asks a cheap session to
-   `cat` it, and refuses to start if the canary's value appears in either the
-   JSON output or stderr (`:322-326`), or if the probe session did not complete
-   cleanly — `.is_error == false` (`:330-333`).
+   sandbox it describes is actually enforced by running a real probe session,
+   unless a cached fingerprint for the same payload + CLI version already
+   proved it (`:230-248`). `relay_settings_probe()` appends a relay-owned
+   canary path to `sandbox.filesystem.denyRead` and asks one cheap session to
+   do two things: `cat` the canary, and `curl` a host that is not in
+   `network.allowedDomains`, writing curl's status code and exit code to a
+   file. The run is refused if the canary's value appears in the session's
+   JSON output or stderr, if the session did not complete cleanly
+   (`.is_error == false`), or if that host answered.
 
-   Be precise about what that proves. Despite the function's own comment at
-   `relay-settings.sh:278-280`, which claims both a blocked read *and* blocked
-   egress are confirmed, the probe makes **no network call at all**. Egress
-   restriction is configured in the payload and never positively verified at
-   startup; only `denyRead` is. Read the comment as the intent, the body as the
-   behaviour.
+   Be precise about what the second assertion proves, because the outcomes are
+   deliberately not symmetric. `relay_settings_egress_verdict()` reports
+   `reachable`, `blocked`, or `inconclusive`, and only `reachable` refuses the
+   run. A result relay cannot interpret — no `curl` on the box, a session that
+   did not finish the command — is journaled as `probe.egress inconclusive` and
+   the run proceeds, because `curl` is not one of relay's dependencies and the
+   canary has already proven the sandbox is on. "Blocked" and "we could not
+   tell" are different claims and relay does not conflate them.
+
+   This is worth knowing if you are reading an older build or an older report:
+   the probe used to test the canary only, while its own comment and
+   `docs/security.md`'s standing rule 1 both said it tested egress too. Relay
+   found that in its own source while documenting itself.
 10. Hash the plan file and set `status: running` (`relay-supervisor.sh:250-251`).
 
-Only then does the `while :; do` loop start (`:537`). On its first pass the
-pre-spawn gates (`:539-562`, see §3) all pass trivially — `COMPLETE.md`,
+Only then does the `while :; do` loop start (`:554`). On its first pass the
+pre-spawn gates (`:556-579`, see §3) all pass trivially — `COMPLETE.md`,
 `BLOCKED.md`, and `STOP` do not exist yet. The loop consumes any queued
-`INBOX.md` note (`:567-575`), increments the session counter to 1, and — with
-`review_every` at its default of 5 — the review-cadence check at `:587-591`
+`INBOX.md` note (`:584-592`), increments the session counter to 1, and — with
+`review_every` at its default of 5 — the review-cadence check at `:604-608`
 does not fire on session 1, so `MODE` stays `normal`. `build_prompt` is
-called (`:605`, defined `:383-465`); since `$STATE/continue.json` does not
+called (`:622`, defined `:383-465`); since `$STATE/continue.json` does not
 exist yet, `handoff_valid` returns false (`:298`) and the prompt's untrusted-
 handoff block reads literally `(no valid handoff; this is the first session
 or the last one failed)` (`:457`). The supervisor then asserts its own argv
 never contains a forbidden flag and always contains the two required ones
-(`:609-612`, `relay-settings.sh:250-273`) before exec'ing the first
-`claude -p` session (`relay-supervisor.sh:620-637`).
+(`:626-629`, `relay-settings.sh:250-273`) before exec'ing the first
+`claude -p` session (`relay-supervisor.sh:637-654`).
 
 ### 1b. From one session ending to the next starting
 
 When `claude` exits, the supervisor captures its exit code, wall-clock
-duration, and cost (`:638-640,670-672`), extracts a human-readable reason
-from the session's own JSON envelope for the journal (`:642-650`), and
+duration, and cost (`:655-657,687-689`), extracts a human-readable reason
+from the session's own JSON envelope for the journal (`:659-667`), and
 records this session's context-at-rest baseline if one was observed
-(`:652-668`, see §6). It then runs the full post-exit predicate chain
+(`:669-685`, see §6). It then runs the full post-exit predicate chain
 described in §3. If nothing in that chain halts the run, the loop falls
-through to bookkeeping (`:853-857`), sleeps `RELAY_POLL_INTERVAL` seconds
-(default 5, `:859`), and loops back to `while :; do` (`:537`) — this time
+through to bookkeeping (`:875-879`), sleeps `RELAY_POLL_INTERVAL` seconds
+(default 5, `:881`), and loops back to `while :; do` (`:554`) — this time
 with `continue.json` present, so the next prompt renders the real handoff
 instead of the first-session placeholder.
 
@@ -155,9 +163,9 @@ The exit code is unreliable in the other direction too: a non-zero exit does
 not mean a crash. The supervisor's own journal comment records that
 `rc=1 dur=295s` from the first real run looked like a crash and was in fact
 a budget cap, discoverable only by inspecting the session's JSON envelope
-(`:644-649`). That is why the supervisor extracts `session.reason` from the
+(`:661-666`). That is why the supervisor extracts `session.reason` from the
 envelope's `subtype`/`terminal_reason` fields rather than from `$?`
-(`:642-650`).
+(`:659-667`).
 
 Because the exit code carries no signal, every decision the supervisor makes
 is instead derived from observable state external to the process's return
@@ -170,57 +178,60 @@ value (`:14-15`):
   `COMPLETE.md` and `BLOCKED.md` are both gated this way.
 - **Commit counts.** `verify_complete()` compares the repository's current
   commit count against `commits_at_start`, recorded once at the very start
-  of the run (`:532-533`); a `COMPLETE.md` claim backed by zero new commits
-  is rejected (`:478-482`).
+  of the run (`:542-550`); a `COMPLETE.md` claim backed by zero new commits
+  is rejected (`:486-492`). Both numbers are normalised before comparison,
+  and an unreadable count becomes `0` — which rejects rather than accepts,
+  because a wrongly rejected claim costs one session and a wrongly accepted
+  one ends the run on work nobody did.
 - **Working-tree cleanliness.** `verify_complete()` also requires
   `git status --porcelain` to be empty (`:475-477`) — a claimed completion
   with uncommitted changes lying around is rejected.
 - **The handoff hash.** `PREV_HANDOFF`/`NEW_HANDOFF` are content hashes of
-  `continue.json` taken before and after the session (`:565,737`), used both
-  to decide whether to archive a new handoff (`:762`) and, together with the
+  `continue.json` taken before and after the session (`:582,754`), used both
+  to decide whether to archive a new handoff (`:779`) and, together with the
   commit-count comparison, to decide whether the session was productive at
-  all (`:778-781`).
+  all (`:795-798`).
 
 Optionally, `verify_complete()` also runs a user-approved acceptance command
 as an argv array (never a shell string) before accepting `COMPLETE.md`
-(`:483-515`).
+(`:493-525`).
 
 ## 3. The post-exit predicate order
 
 The block the supervisor labels `# ---- post-exit predicates, in order ----`
-begins at `relay-supervisor.sh:674`. In exact source order:
+begins at `relay-supervisor.sh:691`. In exact source order:
 
-1. **`COMPLETE.md` sealed** (`:676`). If sealed, `verify_complete()` is
-   called (`:473-517`, see §2). If it passes: journal, notify, set
-   `status: complete`, exit `EX_OK` (0) (`:677-682`). If it fails
+1. **`COMPLETE.md` sealed** (`:693`). If sealed, `verify_complete()` is
+   called (`:473-527`, see §2). If it passes: journal, notify, set
+   `status: complete`, exit `EX_OK` (0) (`:694-699`). If it fails
    verification, `COMPLETE.md` is deleted so the next session must earn it
-   again (`:683-685`), a `complete_rejections` counter is incremented
-   (`:686-688`), and at 3 rejections the run exits `EX_REJECTED` (27)
-   (`:689-693`); otherwise `NEXT_TIER` is set to `fable` — "it thinks it is
-   done and it is not: escalate judgment" (`:694`).
-2. **`BLOCKED.md` sealed** (`:697-702`). Journal, notify, exit `EX_BLOCKED`
+   again (`:700-702`), a `complete_rejections` counter is incremented
+   (`:703-705`), and at 3 rejections the run exits `EX_REJECTED` (27)
+   (`:706-710`); otherwise `NEXT_TIER` is set to `fable` — "it thinks it is
+   done and it is not: escalate judgment" (`:711`).
+2. **`BLOCKED.md` sealed** (`:714-719`). Journal, notify, exit `EX_BLOCKED`
    (20).
-3. **`STOP` file present** (`:704-707`). Exit `EX_STOPPED` (24).
-4. **Usage-limit detection** (`:709-730`). `usage_limited()` reads only the
+3. **`STOP` file present** (`:721-724`). Exit `EX_STOPPED` (24).
+4. **Usage-limit detection** (`:726-747`). `usage_limited()` reads only the
    transport envelope (`is_error`, `api_error_status`), never the model's
    own prose, specifically so a session that merely *mentions* a rate limit
    cannot be mistaken for one that hit one (`:342-359`). On a genuine limit,
    the supervisor backs off and retries up to `max_usage_retries` (default
    20) without consuming the session counter or the stall/fastfail streaks
-   (`:712-729`), or exits `EX_BUDGET` (29) if `on_limit` is not `wait` or
-   retries are exhausted (`:713-717`).
+   (`:729-746`), or exits `EX_BUDGET` (29) if `on_limit` is not `wait` or
+   retries are exhausted (`:730-734`).
 
 Only after these four checks does the supervisor compute the new commit head
-and normalize/hash the handoff (`:733-737`). Then:
+and normalize/hash the handoff (`:750-754`). Then:
 
-5. **Guardrail drift in the handoff** (`:739-754`). The comment at
-   `:739-740` states the reasoning directly: "Guardrail drift beats
+5. **Guardrail drift in the handoff** (`:756-771`). The comment at
+   `:756-757` states the reasoning directly: "Guardrail drift beats
    everything else: a handoff claiming a guardrail was relaxed is the
    highest-value injection there is." If any `done`/`next`/`open_questions`
    entry matches the guardrail-drift pattern (permission language paired
    with `push`, `sudo`, `sandbox`, `bypass`, etc. — `:335`), the supervisor
    writes a fresh `BLOCKED.md` explaining what triggered it and exits
-   `EX_BLOCKED` (`:753`) — *before* the handoff is archived and *before*
+   `EX_BLOCKED` (`:770`) — *before* the handoff is archived and *before*
    anything from this session is committed to git history. This is the
    sense in which it is "checked before anything else": it is not literally
    the first predicate in the file (`COMPLETE.md`/`BLOCKED.md`/`STOP`/usage
@@ -229,35 +240,38 @@ and normalize/hash the handoff (`:733-737`). Then:
    runs strictly before the two actions — archiving the handoff and
    committing the working tree — that would let a compromised handoff have
    any lasting effect.
-6. Lower-confidence injection matches are logged, not halted (`:756-758`).
+6. Lower-confidence injection matches are logged, not halted (`:773-775`).
 7. If the handoff changed and is structurally valid, archive a copy under
-   `$STATE/handoffs/` — never overwriting a prior one (`:760-765`).
+   `$STATE/handoffs/` — never overwriting a prior one (`:777-782`).
 8. **Commit the session's work** via `relay_git_commit()`
-   (`relay-supervisor.sh:768`, `relay-git.sh:218-294`). If a high-confidence
+   (`relay-supervisor.sh:785`, `relay-git.sh:218-294`). If a high-confidence
    secret pattern is found in the staged diff, nothing is committed, the
    index is reset, and the run exits `EX_BLOCKED` with a `BLOCKED.md`
    explaining the match locations only, never the matched value
-   (`relay-supervisor.sh:769-774`, `relay-git.sh:264-285`).
+   (`relay-supervisor.sh:786-791`, `relay-git.sh:264-285`).
 9. Compute `PRODUCTIVE` from whether `HEAD` moved or the handoff changed
-   validly (`relay-supervisor.sh:778-781`).
+   validly (`relay-supervisor.sh:795-798`).
 10. Reset `NEXT_MODE` to `normal`, then force `recovery` mode if a
-    `PreCompact` event fired this session (`:784-787`) or the handoff is
-    invalid (`:789-792`).
+    `PreCompact` event fired this session (`:801-804`) or the handoff is
+    invalid (`:806-809`).
 11. On a session timeout (`RC` 124 or 137), force recovery mode, count
     consecutive timeouts, and exit `EX_TIMEOUT` (22) at the configured
-    `max_timeouts` (default 2) (`:793-808`).
-12. Update the stall and fastfail streaks; auto-escalate to `fable` one
-    session *before* either breaker would trip — "escalate before giving
-    up: a smarter model is strictly better than a halt" (`:821-828`).
+    `max_timeouts` (default 2) (`:810-825`).
+12. Update the stall and fastfail streaks. A productive session clears both,
+    however brief it was; only an unproductive one counts, and it counts
+    toward the fastfail streak as well when it also ended in under
+    `min_session_secs` (`:827-841`). Auto-escalate to `fable` one session
+    *before* either breaker would trip — "escalate before giving up: a
+    smarter model is strictly better than a halt" (`:843-851`).
 13. Trip the circuit breakers: `stall_limit` sessions with no progress exits
-    `EX_STALLED` (21) (`:831-835`); `fastfail_limit` consecutive sub-minimum
-    sessions exits `EX_FASTFAIL` (26) (`:836-840`).
+    `EX_STALLED` (21) (`:853-857`); `fastfail_limit` consecutive unproductive
+    sub-minimum sessions exits `EX_FASTFAIL` (26) (`:858-862`).
 14. **De-escalate**: if the tier is `fable` and this session was productive,
-    return to the default tier in one shot (`:843`) — "one hard step must
-    not pin the whole run to the costly tier" (`:842`). See §6.
+    return to the default tier in one shot (`:865`) — "one hard step must
+    not pin the whole run to the costly tier" (`:864`). See §6.
 15. Detect and journal a mid-run plan change by comparing plan file hashes
-    (`:845-851`).
-16. Persist all counters to `state.json` and loop (`:853-859`).
+    (`:867-873`).
+16. Persist all counters to `state.json` and loop (`:875-881`).
 
 ## 4. State layout under `~/.local/state/relay/projects/<hash>/`
 
@@ -283,13 +297,13 @@ Top-level files, all written by the supervisor or by sessions it launches:
 | `RUN.md` | Mission, acceptance criteria, guardrails, decisions already made; written once at `/relay-init`, read by every session (`SKILL.md:68-81`, `relay-supervisor.sh:391`) | Yes — the primary document a human reviews before and during a run |
 | `config.json` | Settings only, never commands (`SKILL.md:83-85,187-189`); read via `cfg()` (`relay-supervisor.sh:54-71`) | Occasionally, to check caps |
 | `exec.json` | The approved `acceptance_cmd` argv array (`SKILL.md:175-190`), validated at `relay-supervisor.sh:76-85` | Occasionally, to check what runs |
-| `state.json` | Machine state: `run_id`, `status`, `reason`, `session_count`, `stall_count`, `fastfail_streak`, `fable_used`, `next_mode`, `next_tier`, `cost_total`, `ctx_baseline`, `last_review_n`, `complete_rejections`, `commits_at_start`, `plan_hash`, `human_tasks`, `last_session_rc`, `timeouts` (written throughout via `state_set`, e.g. `:150,244,251,533,680,773,854-857`) | Yes, via `/relay-status` (`SKILL.md:134-144`) |
+| `state.json` | Machine state: `run_id`, `status`, `reason`, `session_count`, `stall_count`, `fastfail_streak`, `fable_used`, `next_mode`, `next_tier`, `cost_total`, `ctx_baseline`, `last_review_n`, `complete_rejections`, `commits_at_start`, `plan_hash`, `human_tasks`, `last_session_rc`, `timeouts` (written throughout via `state_set`, e.g. `:150,244,251,550,697,790,876-879`) | Yes, via `/relay-status` (`SKILL.md:134-144`) |
 | `journal.log` | Tab-separated `epoch\tevent\tdetail` audit trail (`relay_journal`, `lib/relay-lib.sh:43-50`), set as `RELAY_JOURNAL` (`relay-supervisor.sh:45`) | Yes — `tail -f` is the documented way to watch a run (`SKILL.md:127`) |
 | `continue.json` | The live handoff; see §5 | Not normally — schema-validated machine state (`SKILL.md:207-208`) |
-| `HUMAN-TASKS.md` | Non-blocking items a session appended instead of stopping (`relay-supervisor.sh:409`); counted at `:853` | Yes — the intended place a human catches up |
-| `BLOCKED.md` | Sealed sentinel for a genuine blocker, written by a session (`:411-412`) or by relay itself on guardrail drift (`:743-750`) or a detected secret (`relay-git.sh:269-283`) | Yes — read on `/relay-resume` (`SKILL.md:166-169`) |
+| `HUMAN-TASKS.md` | Non-blocking items a session appended instead of stopping (`relay-supervisor.sh:409`); counted at `:875` | Yes — the intended place a human catches up |
+| `BLOCKED.md` | Sealed sentinel for a genuine blocker, written by a session (`:411-412`) or by relay itself on guardrail drift (`:760-767`) or a detected secret (`relay-git.sh:269-283`) | Yes — read on `/relay-resume` (`SKILL.md:166-169`) |
 | `COMPLETE.md` | Sealed sentinel claiming the plan is done, with cited proof (`relay-supervisor.sh:413-415`) | Yes, once verified |
-| `INBOX.md` | Queued operator notes from `/relay-note`, consumed atomically each loop iteration (`SKILL.md:156-160`, `relay-supervisor.sh:567-575`) | Write-only for a human; not meant to be read back |
+| `INBOX.md` | Queued operator notes from `/relay-note`, consumed atomically each loop iteration (`SKILL.md:156-160`, `relay-supervisor.sh:584-592`) | Write-only for a human; not meant to be read back |
 | `STOP` | Empty kill-switch file touched by `/relay-stop` (`SKILL.md:148-152`) | No — a marker, not content |
 | `supervisor.out` | Redirected stdout/stderr of the supervisor process itself (`SKILL.md:124`) | Only when the supervisor itself misbehaves |
 
@@ -297,29 +311,31 @@ Subdirectories, all supervisor-internal and not meant for routine reading
 (useful only when diagnosing a stuck or crashed run):
 
 - `sessions/<NNN>-<uuid>.log` and `.log.err` — one pair per session
-  (`relay-supervisor.sh:603,636`), pruned to `keep_sessions` (default 5) and
+  (`relay-supervisor.sh:620,653`), pruned to `keep_sessions` (default 5) and
   `keep_days` (default 7) by `relay_prune_sessions`
   (`lib/relay-lib.sh:522-551`) because logs "hold whatever the agent read"
-  (`:508-511`).
+  (`:518-521`).
 - `handoffs/<NNN>-<hash>.json` — every accepted handoff, archived and never
-  overwritten in place (`relay-supervisor.sh:762-765`).
+  overwritten in place (`relay-supervisor.sh:779-782`).
 - `locks/run.d/owner` — `pid|epoch|host|run_id`, the single-instance lock
   (`lib/relay-lib.sh:230`, `relay-supervisor.sh:162-167`).
 - `run/ctx.log` — one line per active context-guard call
   (`relay-ctx.sh:253-256`), read by the supervisor to compute
-  `ctx_baseline` (`relay-supervisor.sh:659-668`).
+  `ctx_baseline` (`relay-supervisor.sh:676-685`).
 - `run/hook-<session-id>.state` — the context guard's own throttle state:
   `LAST_EPOCH|LAST_PCT|LAST_LEVEL|CALLS` (`relay-ctx.sh:86,133-137,153-159`).
 - `run/compaction.events`, `run/compacted.flag` — the PreCompact tripwire
   and the "autocompact fired anyway" flag (`relay-ctx.sh:104-107,241-244`),
-  consumed by the supervisor to force recovery mode (`relay-supervisor.sh:784-787`).
-- `run/probe.ok`, `run/probe-*.json`, `run/probe-*.err` — the settings
-  fingerprint cache and the sandbox-enforcement probe's own scratch
-  (`relay-supervisor.sh:236-248`, `relay-settings.sh:289-336`).
+  consumed by the supervisor to force recovery mode (`relay-supervisor.sh:801-804`).
+- `run/probe.ok`, `run/probe-*.json`, `run/probe-*.err`,
+  `run/probe-egress.txt` — the settings fingerprint cache and the
+  sandbox-enforcement probe's own scratch, the last holding the egress
+  attempt's status and exit code
+  (`relay-supervisor.sh:236-248`, `relay-settings.sh:376-450`).
 - `run/inbox-current.md` — this iteration's consumed operator note
-  (`relay-supervisor.sh:569-575`).
+  (`relay-supervisor.sh:586-592`).
 - `run/acceptance.log` — stdout/stderr of the acceptance command
-  (`:511`).
+  (`:521`).
 - `run/hook.alive` — touched on every live hook invocation
   (`relay-ctx.sh:178,182`); a liveness signal only.
 
@@ -341,7 +357,7 @@ most 12 in `next` (`:304` — note it bounds only those two arrays, not
 The 12-entry cap on all four arrays is real, but it is applied by
 `handoff_normalize()` (`:286-289`) before this check runs, not by this check. A handoff that fails this shape check outright — not
 JSON, missing `next`, wrong types — is dropped, and the next session runs in
-recovery mode (`:789-792`).
+recovery mode (`:806-809`).
 
 A handoff with the right shape but over-long entries is **not** treated as a
 structural failure. `handoff_normalize()` (`:272-295`) truncates any string
@@ -394,7 +410,7 @@ precisely the channel this schema exists to close off.
 The default tier is configurable (`model_tier`, default `opus`,
 `relay-supervisor.sh:93`; `plugins/relay/config/defaults.json:13`). Relay
 sets the model for the **top-level session** only, via `--model "$TIER"`
-(`relay-supervisor.sh:629`). Subagents that top-level session spawns through
+(`relay-supervisor.sh:646`). Subagents that top-level session spawns through
 the Task tool are not given an explicit `--model` by relay; the "sonnet
 subagents, opus orchestrator" shape described in the README
 (`README.md:124-128`) follows from Claude Code's own default Task-tool
@@ -419,25 +435,25 @@ left in front of it (`:179-199`) — this is what caught the case where a
 120k window against a 69k measured baseline left 3k of working room and two
 sessions in a row committed nothing (`:183-184`).
 
-**Escalation.** `NEXT_TIER` starts as the configured default (`:530`) and
+**Escalation.** `NEXT_TIER` starts as the configured default (`:540`) and
 changes in three places, in the order a run would actually hit them:
 
 1. A `COMPLETE.md` claim that fails verification immediately escalates to
    `fable` — "it thinks it is done and it is not: escalate judgment"
-   (`:694`).
+   (`:711`).
 2. Reaching `STALL_LIMIT - 1` unproductive sessions or
    `FASTFAIL_LIMIT - 1` too-short sessions escalates to `fable` **one
    session before** either circuit breaker would trip, provided the
    per-run `max_fable_sessions` cap (default 3, `:66`,
-   `config/defaults.json:17`) is not already exhausted (`:821-828`).
+   `config/defaults.json:17`) is not already exhausted (`:843-850`).
 3. If a session is asked to run as `fable` but the cap is already
    exhausted, it silently falls back to the default tier instead
-   (`:594-598`).
+   (`:611-615`).
 
 **De-escalation is one-shot.** `[ "$NEXT_TIER" = "fable" ] && [ "$PRODUCTIVE" -eq 1 ] && NEXT_TIER="$TIER_DEFAULT"`
-(`:843`) — the very next productive session after an escalation returns
+(`:865`) — the very next productive session after an escalation returns
 immediately to the default tier, so a single hard step in the plan cannot
-pin the entire remaining run to the more expensive model (`:842`).
+pin the entire remaining run to the more expensive model (`:864`).
 
 ## 7. The context guard
 
@@ -485,7 +501,7 @@ corroborated by `docs/security.md:68-69`).
 JSON payload on stdin (drained with a 5-second timeout, `relay-ctx.sh:44-47`)
 and three environment variables the supervisor sets only for this session's
 child process: `RELAY_SESSION_ID`, `RELAY_DIR`, `RELAY_CTX_WINDOW`
-(`relay-supervisor.sh:622-624`). It validates `RELAY_SESSION_ID` is
+(`relay-supervisor.sh:639-641`). It validates `RELAY_SESSION_ID` is
 UUID-shaped before ever using it in a path (`relay-ctx.sh:61-62`), and
 exits inert unless the payload's own session id matches the environment's —
 `RELAY_SESSION_ID` is inherited by anything the session spawns, including a
@@ -514,7 +530,7 @@ transition, except at level 3 which re-emits on every call
   incomplete, and take no other action (`:301-306`).
 - **`--precompact` mode** emits a fixed compaction warning and unconditionally
   appends to `run/compaction.events`, which is the signal the supervisor
-  actually trusts (`relay-ctx.sh:103-112`, `relay-supervisor.sh:784-787`) —
+  actually trusts (`relay-ctx.sh:103-112`, `relay-supervisor.sh:801-804`) —
   the in-band message to the model is best-effort on top of that marker.
 
 Every emitted message is assembled only from relay-computed scalars (a

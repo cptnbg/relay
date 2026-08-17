@@ -43,28 +43,32 @@ rejected as a hostname list (`relay-supervisor.sh:216-225`).
 
 ## The sandbox probe failed
 
-What it checks: `relay_settings_probe()` (`relay-settings.sh:289-336`)
+What it checks: `relay_settings_probe()` (`relay-settings.sh:376-450`)
 appends a relay-owned canary file to the session's
-`sandbox.filesystem.denyRead`, asks a cheap `haiku` session to `cat` it,
-and requires the canary's value to never appear in that session's JSON
-output or stderr (`relay-settings.sh:322-326`), and the probe session to
-have completed cleanly — `.is_error == false`
-(`relay-settings.sh:330-333`). Either failure refuses to start
-(`relay-supervisor.sh:241-246`, exit 78, `reason
-"sandbox-not-enforced"`).
+`sandbox.filesystem.denyRead` and asks one cheap `haiku` session to do two
+things — `cat` the canary, and `curl` a host that is not in
+`network.allowedDomains`. It refuses to start if the canary's value
+appears in that session's JSON output or stderr
+(`relay-settings.sh:425-429`), if the session did not complete cleanly —
+`.is_error == false` (`:433-436`) — or if the host answered (`:439-446`).
+Any of those refuses the run (`relay-supervisor.sh:241-246`, exit 78,
+`reason "sandbox-not-enforced"`).
 
-Be precise about what it proves: the code's own comment
-(`relay-settings.sh:278-280`) claims the probe confirms both a blocked
-read and blocked egress, but the probe makes **no network call at all**.
-It proves `denyRead` is enforced and the session ran cleanly; it proves
-nothing about egress restriction at runtime (`docs/architecture.md` §1a
-makes the same correction). Relay refuses to run either way — a failure
-means the whole sandbox basis is unproven, not just the network half.
+Be precise about what the egress half proves.
+`relay_settings_egress_verdict()` (`relay-settings.sh:316-347`) reads
+curl's own status code and exit code out of `$STATE/run/probe-egress.txt`
+and reports `reachable`, `blocked`, or `inconclusive`. Only `reachable`
+refuses the run. `inconclusive` — no `curl` on the box, or a session that
+never finished the command — is journaled as `probe.egress inconclusive`
+and the run proceeds on the canary's proof, because `curl` is not one of
+relay's dependencies. If that line is in your journal, egress restriction
+was configured but not demonstrated on this machine; `test/lint/probe0-sandbox.sh`
+is the paid probe that demonstrates it outright.
 
 What to run next: read `$STATE/run/probe-*.json` and
 `$STATE/run/probe-*.err`, the probe's own scratch. The result is cached by
 a fingerprint of the settings payload plus `claude --version`
-(`relay-settings.sh:344-348`, `run/probe.ok`), so a CLI upgrade forces a
+(`relay-settings.sh:458-462`, `run/probe.ok`), so a CLI upgrade forces a
 fresh proof automatically. A probe that keeps failing after that is a real
 sandbox regression in this CLI build, not something to retry past.
 
@@ -109,7 +113,7 @@ budget_exhausted` (`test/cases/c107_budget_cap_is_not_a_usage_limit.sh:4-
 
 What to read: the journal's `session.reason` line for that session
 number, extracted from the session's JSON envelope, never from `$RC`
-(`relay-supervisor.sh:642-650`). `rc=1` alone tells you nothing;
+(`relay-supervisor.sh:659-667`). `rc=1` alone tells you nothing;
 `session.reason n=<N> ... budget_exhausted` tells you `budget_usd_per_
 session` did its job, not that anything failed. A genuine crash instead
 shows up as an unproductive session advancing `stall_count` or
@@ -135,9 +139,9 @@ handoff's `done`/`next`/`open_questions` arrays for text matching
 (`allow`, `approved`, `ok`) near something relay would never grant on its
 own: force-push, `sudo`, skipping tests, disabling the sandbox. On a
 match, the supervisor writes `BLOCKED.md` itself
-(`relay-supervisor.sh:743-750`) and halts *before* the handoff is archived
+(`relay-supervisor.sh:760-767`) and halts *before* the handoff is archived
 and *before* anything from the session is committed
-(`relay-supervisor.sh:739-740`) — ahead of every other content-based
+(`relay-supervisor.sh:756-757`) — ahead of every other content-based
 check, because a handoff claiming a relaxed guardrail is the highest-value
 thing an injection could write.
 
@@ -239,10 +243,10 @@ interrupts a session already in flight.
 
 Why: for a session's entire duration the supervisor is blocked in a
 synchronous, foreground subshell around `relay_timeout`
-(`relay-supervisor.sh:620-637`) — not backgrounded, so the shell waits on
+(`relay-supervisor.sh:637-654`) — not backgrounded, so the shell waits on
 that child directly. `STOP` is checked only between sessions: pre-spawn
-(`relay-supervisor.sh:549-552`) and post-exit
-(`relay-supervisor.sh:704-707`) — never mid-session. The `INT`/`TERM`/
+(`relay-supervisor.sh:566-569`) and post-exit
+(`relay-supervisor.sh:721-724`) — never mid-session. The `INT`/`TERM`/
 `HUP` traps (`relay_install_traps`, `relay-supervisor.sh:168`, defined
 `lib/relay-lib.sh:682-688`, handlers `lib/relay-lib.sh:652-668`, cleanup
 `lib/relay-lib.sh:615-650`) genuinely work, but bash defers running a trap
@@ -268,21 +272,25 @@ just carries on into another session instead of accepting `COMPLETE.md`.
 
 What it means: `verify_complete()` compares the live commit count against
 `commits_at_start`, captured once when the supervisor starts, from `git
-rev-list --count HEAD` (`relay-supervisor.sh:532-533`). The comparison is
-`[ -n "$_start" ] && [ "${_now:-0}" -le "$_start" ]`
-(`relay-supervisor.sh:480`), where `$_now` is read fresh one line earlier
-(`:478`) by the same command, with stderr discarded.
+rev-list --count HEAD` (`relay-supervisor.sh:542-550`). Both sides are
+normalised to a number before the comparison, and an unreadable count
+becomes `0` (`relay-supervisor.sh:478-492`).
 
-The path that produces *this* symptom is `$_now`, not `$_start`. If that
-`rev-list` at `:478` fails or prints nothing — a git error inside
-`$PROJECT`, an index lock, a detached or unborn `HEAD` — the failure is
-swallowed and `${_now:-0}` substitutes `0`, which is `-le` any real
-`$_start`. `COMPLETE.md` is then rejected with `no commits were made`
-even though the commits are right there in `git log`. Note that
-`commits_at_start` being *empty* is the opposite bug and does not cause
-this: an empty `$_start` fails the `[ -n "$_start" ]` test and skips the
-comparison entirely, so the run over-accepts rather than over-rejects.
-Both are recorded open items for the maintainer; neither is fixed here.
+That normalisation is deliberately asymmetric, and it is what produces
+this symptom. If the `rev-list` reading the *current* count fails or
+prints nothing — a git error inside `$PROJECT`, a stale index lock, a
+detached or unborn `HEAD` — it becomes `0`, which is `-le` any real
+`commits_at_start`, so `COMPLETE.md` is rejected with `no commits were
+made` even though the commits are in `git log`. The journal line carries
+both numbers (`start=… now=…`), which tells you immediately whether this
+is what happened.
+
+Failing that way round is the intended trade: a wrongly rejected
+`COMPLETE.md` costs one more session, while a wrongly accepted one ends
+the run on work that was never done. Relay used to fail the other way —
+an empty `commits_at_start` skipped the check entirely, so a run on a
+repository with no commits yet could seal `COMPLETE.md` having committed
+nothing at all.
 
 What to run: in `$PROJECT`, run `git rev-list --count HEAD` yourself and
 check it both succeeds and prints a number, then compare it against
@@ -291,53 +299,66 @@ what made it fail under the supervisor — most often a stale
 `.git/index.lock` left by another tool. Do not hand-edit
 `relay-supervisor.sh` to work around it.
 
-## Relay gave up with EX_FASTFAIL after some short but productive sessions
+## Relay gave up with EX_FASTFAIL
 
 What you see: exit 26, `state.json` status `blocked` reason `fastfail`
-(`docs/exit-codes.md`'s EX_FASTFAIL entry), even though the sessions
-before it clearly committed work.
+(`docs/exit-codes.md`'s EX_FASTFAIL entry).
 
-What it means: the fastfail streak resets only when a session is BOTH
-productive AND at least `min_session_secs` long — `[ "$PRODUCTIVE" -eq 1
-] && [ "$DUR" -ge "$MIN_SESSION_SECS" ]` (`relay-supervisor.sh:810`).
-Anything not satisfying both falls to the `else` branch, where a session
-under `min_session_secs` increments `FASTFAIL`
-(`relay-supervisor.sh:813-816`) regardless of `$PRODUCTIVE`. A session
-that commits real work faster than `min_session_secs` — 45s by default
-(`relay-supervisor.sh:63`) — still counts toward the streak; nothing
-exempts it for having done something. Recorded open defect, not fixed
-here: the reset and increment conditions are not each other's mirror
-image.
+What it means: `fastfail_limit` consecutive sessions (default 3) both
+produced nothing and ended in under `min_session_secs` (default 45s,
+`relay-supervisor.sh:63`). Both conditions are required — a session that
+committed or wrote a valid handoff clears the streak however brief it was
+(`relay-supervisor.sh:834-836`). So this is a genuine crash loop: sessions
+are dying before they can do anything, not working quickly.
 
-How to tell this from a real crash loop: read `$STATE/sessions/` logs for
-the sessions that tripped it (`journal.log`'s `fastfail.streak` lines name
-durations). A real crash loop shows sessions that errored, wrote nothing,
-and left no commits. This defect looks different: `git log` shows real
-commits landing every few sessions, each just under
-`min_session_secs`. If so, raising `min_session_secs` is a workable
-mitigation; fixing the streak logic is a maintainer item.
+What to check: read `$STATE/sessions/` for the sessions that tripped it
+(`journal.log`'s `fastfail.streak` lines name their durations). The usual
+causes are an auth failure, a rejected `--session-id`, or a settings
+payload the CLI refuses — all of which produce a session that starts and
+stops with nothing in between. The session log's `result` envelope names
+the reason; `session.reason` in the journal carries the short form.
+
+Historical note, in case you meet an older report of this: until the
+counters were separated, a session that committed real work *faster* than
+`min_session_secs` also counted toward the streak, so three quick correct
+steps could trip the breaker on a healthy run. If you see that symptom,
+you are running a build from before that fix. `c141` covers it.
 
 ## I have two supervisors running against the same project
 
 What you see: two `relay-supervisor.sh` processes alive for the same
 project, each launching its own `claude -p` sessions against the same
-tree — or, running relay's own suite, `bash test/run.sh` failing
-`c140_lock_contention` and `test/lib/test-relay-lib.sh` failing
-`lock_second_fails`.
+tree.
 
 What it means: the single-instance lock (`relay-supervisor.sh:162-167`,
 `relay_lock` in `lib/relay-lib.sh:212-251`) decides whether a lock
-directory is stale by asking if its owner pid is alive, inside
-`_relay_lock_try_break()` (`lib/relay-lib.sh:255-316`). On the same host,
-liveness is `ps -p "$_rlb_pid" >/dev/null 2>&1`
-(`lib/relay-lib.sh:279`); if that `ps` call cannot run at all — blocked by
-a sandbox, or unavailable — its non-zero exit reads exactly like "that pid
-is not running," and `_rlb_stale` is set to 1
-(`lib/relay-lib.sh:280`), breaking a lock that may still have a live
-owner. Recorded open item, not fixed here.
+directory is stale inside `_relay_lock_try_break()`
+(`lib/relay-lib.sh:255-340`). On the same host it asks whether the owner
+pid is alive with `ps`; if `ps` itself cannot run — blocked by a sandbox,
+or absent — liveness is *unknowable*, and relay falls back to breaking the
+lock only on age, exactly as it does for a lock owned by another host
+(`lib/relay-lib.sh:301-320`).
 
-What to check: from the same environment relay runs in — the same
-sandbox, if any — run `ps -p $$`. Exit 127 instead of your own shell's
-pid means you have this problem: any lock a supervisor started from that
-environment holds can be broken out from under it. `c140_lock_contention`
-and `lock_second_fails` are the two tests that would start failing.
+That fallback exists because `ps -p <pid>` fails identically when the
+process is gone and when `ps` cannot run at all. Relay used to read both as
+"the owner is dead," which broke live locks: inside relay's own sandbox
+`ps` exits 127, so *every* liveness check failed. A supervisor could then
+delete a running supervisor's lock and start beside it. The tell was
+`bash test/run.sh` failing `c140_lock_contention` and
+`test/lib/test-relay-lib.sh` failing `lock_second_fails`, but only when the
+suite ran from inside a session.
+
+What to check: from the same environment relay runs in, run `ps -p $$`.
+Exit 127 instead of your own pid means liveness cannot be established
+there, so relay is using the age rule: `journal.log` carries a
+`lock.ps-unusable` line each time, and a lock is then only broken once it
+is older than four times `RELAY_LOCK_STALE_SECS` (3600s by default,
+`lib/relay-lib.sh:37`). A crashed supervisor's lock therefore clears in an
+hour rather than instantly. If you need it gone sooner, remove the lock
+directory yourself after confirming no supervisor is running:
+`pgrep -f relay-supervisor.sh` first, then `rm -rf "$STATE/locks/run.d"`.
+
+If you genuinely see two supervisors on one project and `ps` works fine,
+that is not this: check whether the two are pointed at the same state
+directory at all (`relay status` prints it), because the lock is per state
+directory, not per repository path.

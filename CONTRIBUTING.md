@@ -17,14 +17,23 @@ repository, not something already verified against a live GitHub setting.
 
 Any diff that touches a file under `plugins/relay/hooks/` or
 `plugins/relay/scripts/` requires review and approval from a second maintainer
-before it can merge — not the same person who wrote the diff. This is
-enforced by branch protection on the published repository (a
-required-reviewers rule scoped to those paths), not by convention or by a
-note in this file that a reviewer could skip under time pressure. The reason
-is the same one covered in full under "The self-hosting hazard" below: these
-are the files relay's own supervisor executes, sometimes while a relay
-session is the one proposing the change, and a single missed review here is
-a corrupted overnight run, not a filed bug.
+before it can merge — not the same person who wrote the diff. The reason is
+the same one covered in full under "The self-hosting hazard" below: these are
+the files relay's own supervisor executes, sometimes while a relay session is
+the one proposing the change, and a single missed review here is a corrupted
+overnight run, not a filed bug.
+
+This is meant to be enforced by the repository, not by a note in a file that a
+reviewer could skip under time pressure. The mechanism on GitHub is a
+`CODEOWNERS` entry claiming those two paths, plus branch protection with
+*Require review from Code Owners* enabled on the default branch — path-scoped
+review is a CODEOWNERS feature, and branch protection alone cannot express it.
+
+**Not yet in force.** At the time of writing this repository has no remote, so
+neither file nor setting exists. Until a maintainer creates them, the paragraph
+above describes intent rather than enforcement, and a reader should treat it
+that way. Setting it up is a release blocker, tracked with the other
+publish-time owner tasks.
 
 ## Running the suites
 

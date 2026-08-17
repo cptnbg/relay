@@ -138,7 +138,17 @@ has to be probed against the real CLI.
    so relay must positively confirm enforcement before every run rather than assume it.
    The production acceptance probe is `probe0-sandbox.sh`'s shape: assert a `denyRead` path
    is actually unreadable and a non-allowlisted host is actually unreachable, in a
-   relay-owned scratch directory. If either assertion fails, refuse to start.
+   relay-owned scratch directory. If either assertion is *contradicted* — the canary is
+   readable, or the host answers — refuse to start.
+
+   One deliberate asymmetry, added when relay's own audit found the runtime probe testing
+   only the canary while this rule claimed both: an egress attempt relay cannot interpret
+   is not the same as one that was blocked. `curl` is not a relay dependency, so a box
+   without it yields no verdict; that case is journaled as `probe.egress inconclusive` and
+   the run proceeds on the canary's proof alone. Refusing on "we could not tell" would make
+   relay unrunnable on a machine where nothing is actually wrong. `probe0-sandbox.sh`,
+   which is run by a human against a machine that does have `curl`, remains the place
+   egress blocking is proven outright.
 2. **`sandbox.failIfUnavailable: true` always.** The default is false, and on failure
    commands run *unsandboxed* with only a warning.
 3. **Never `sandbox.filesystem.disabled: true`** — it drops `denyRead` protection.

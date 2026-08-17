@@ -134,7 +134,7 @@ macOS ships bash 3.2.57 and relay treats that as the floor
 are bash-2-era syntax, not a bash-4-ism — but this codebase does not use
 them anywhere in `plugins/`, and the one place an argv list has to be built
 dynamically shows why: `verify_complete()`'s acceptance-command runner
-(`relay-supervisor.sh:501-510`) builds its argument list with `set --`
+(`relay-supervisor.sh:511-520`) builds its argument list with `set --`
 against the positional parameters, not a bash array:
 
 ```
@@ -236,49 +236,56 @@ Both linters are static `grep`-based scans over shipped `.sh` files, not
 runtime checks — they catch a forbidden construct or command the moment it
 is committed, before it ever reaches someone else's machine.
 
-## The lock's undeclared exception
+## The lock's undeclared dependency: `ps`
 
-Everything above is enforced. This section is not: it is a known gap in the
-policy itself, recorded here rather than fixed, because fixing it would be
-a behavioural change to a script under `plugins/relay/scripts/`, which is
-out of scope for documentation work.
+Everything above is enforced by a linter. This section is not, because the
+dependency it describes is real but conditional: relay works without `ps`, it
+just recovers a crashed run more slowly.
 
 `relay_lock()`'s staleness check, `_relay_lock_try_break()`
-(`relay-lib.sh:255-316`), decides whether a same-host lock's owner process
-is still alive by shelling out to `ps`:
-
-```
-if ! ps -p "$_rlb_pid" >/dev/null 2>&1; then
-  _rlb_stale=1
-fi
-```
-
-(`relay-lib.sh:279-280`). `ps` is not in the hard-dependency list above, and
-`test/lint/no-deps.sh` does not scan for it — its pattern list
+(`relay-lib.sh:255-340`), decides whether a same-host lock's owner process is
+still alive by shelling out to `ps`. `ps` is not in the hard-dependency list
+above, and `test/lint/no-deps.sh` does not scan for it — its pattern list
 (`no-deps.sh:23-36`) has no `ps` entry, so a call to `ps` is not a lint
 failure the way a call to `timeout` or `stat -f` would be. `relay-lib.sh:8`
 does list `ps` among the "allowed externals" in its header comment, which
-is accurate as far as it goes, but that comment is prose, not something
-`no-deps.sh` checks against; it records intent without enforcing it.
+records intent without enforcing it.
 
-The consequence is more than a missing lint rule. The check above treats
-*any* non-zero return from `ps -p "$pid"` as proof the owner is dead and
-proceeds to break the lock (`_rlb_stale=1`, followed by the race-safe break
-at `relay-lib.sh:305-313`). A `ps` that cannot run at all — for instance
-because it is unavailable inside a sandbox, where invoking it returns
-`rc=127` for "command not found" — produces exactly the same non-zero
-status as a `ps` that ran fine and correctly reported the pid is gone. The
-code cannot tell those two cases apart, and it resolves the ambiguity
-toward breaking the lock. This means the single-instance lock, which exists
-specifically to guarantee mutual exclusion between two supervisors on the
-same project, fails *open* rather than closed in exactly the environment
-where fail-closed would matter most: a live owner process whose liveness
-cannot even be checked. This was reproduced directly, and it is the reason
-two of the repository's own tests currently fail.
+What matters is how the code resolves the ambiguity. `ps -p "$pid"` returns
+non-zero both when the process is gone and when `ps` cannot run at all — a
+sandbox that blocks it returns `rc=127`, "command not found". Those two cases
+are indistinguishable from the exit status alone, and a lock that resolves
+them the same way resolves them wrongly half the time.
 
-This is a real, currently-undeclared dependency and a real correctness gap,
-recorded here for the maintainer. It is not something this document fixes —
-that would mean editing `relay-lib.sh`, which is explicitly out of scope
-for a documentation-only pass — and it is not cause for alarm about
-anything else in this file: it is the one place the stated dependency
-policy and the actual code disagree, and it is now named as exactly that.
+Relay resolves them separately, by asking `ps` about a pid that certainly
+exists — its own:
+
+```
+if ps -p "$$" >/dev/null 2>&1; then
+  _rlb_verifiable=1
+else
+  relay_journal "lock.ps-unusable" "$_rlb_dir"
+fi
+```
+
+(`relay-lib.sh:294-299`). When liveness is verifiable, pid liveness decides.
+When it is not, relay falls back to the same age rule it uses for a lock owned
+by a different host: break only once the lock is older than
+`RELAY_LOCK_STALE_SECS * 4`, 3600 seconds by default
+(`relay-lib.sh:301-320`). A live owner is never evicted on a guess, and a
+crashed one still gets cleaned up — an hour later instead of immediately.
+
+This is the direction a lock has to fail. Until it was fixed, the check read
+any `ps` failure as "the owner is dead" and broke the lock, so the
+single-instance guarantee failed *open* precisely where fail-closed matters
+most: inside a sandbox, where `ps` never works and a running supervisor's lock
+could be deleted out from under it by a second one. The two tests that caught
+it — `c140_lock_contention` and `lock_second_fails` — failed only when the
+suite was run from inside a relay session, which is why the bug survived a
+full green suite on the host. `lock_live_survives_unusable_ps` and
+`lock_ancient_still_broken_without_ps` in `test/lib/test-relay-lib.sh` now
+cover both halves directly, with `ps` stubbed out.
+
+So `ps` remains an undeclared soft dependency, and that is now a deliberate,
+documented position rather than an unnoticed one: relay prefers it, works
+without it, and says in the journal which mode it is in.

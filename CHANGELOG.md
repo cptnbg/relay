@@ -20,8 +20,8 @@ recorded user consent.
 - Structured `continue.json` handoffs with schema validation, nonce fencing,
   injection filtering, and a guardrail-drift halt.
 - `relay doctor` preflight gate.
-- Zero-API-cost test harness: mock `claude`, runner, 27 hook tests, git and
-  primitive suites.
+- Zero-API-cost test harness: mock `claude`, a plain-shell runner, and the
+  hook, supervisor, git and primitive suites.
 - `permissions.allow` in the settings payload. Under `--permission-mode dontAsk`
   anything not explicitly allowed is refused, so a deny-only payload produced
   sessions that could not write a file.
@@ -54,3 +54,33 @@ recorded user consent.
 - The acceptance command was re-quoted into a string and `eval`'d, which gave a
   shell to any element containing a quote. Elements now load into positional
   parameters and execute directly.
+- **The single-instance lock failed open when `ps` was unusable.**
+  `_relay_lock_try_break()` read any non-zero `ps -p <pid>` as "the owner is
+  dead", but `ps` returns non-zero both when a process is gone and when it
+  cannot run at all — inside relay's own sandbox it exits 127. A live
+  supervisor's lock could therefore be deleted by a second supervisor, which
+  then ran beside it on the same repository. Liveness is now established
+  separately (`ps -p $$`), and when it cannot be established relay falls back
+  to breaking only on age, as it already did for locks owned by another host.
+- **`verify_complete()` skipped its "no commits were made" check entirely** when
+  `commits_at_start` was empty, which is what `git rev-list --count HEAD` yields
+  on a repository with no commits yet. A run could seal `COMPLETE.md` having
+  committed nothing. Both counts are now normalised, and an unreadable count
+  rejects rather than accepts.
+- **The fast-fail circuit breaker counted productive sessions.** The streak
+  incremented on wall-clock duration alone, so three sessions that each
+  committed real work in under `min_session_secs` halted a healthy run with
+  `EX_FASTFAIL`. Both counters now require the session to have produced
+  nothing.
+- **The acceptance probe never tested network egress**, while its own comment
+  and `docs/security.md`'s standing rule 1 both said it did. It now attempts a
+  connection to a host outside `network.allowedDomains` and refuses to start if
+  that host answers. A result it cannot interpret is journaled as
+  `probe.egress inconclusive` rather than being reported as blocked.
+
+### Changed
+- `docs/{architecture,exit-codes,portability,troubleshooting}.md`, `README.md`
+  and `docs/security.md` updated to describe the behaviour above. The four
+  defects were all found by relay auditing its own source while documenting
+  itself, and were reported rather than fixed at the time because that run was
+  forbidden to modify executable files.

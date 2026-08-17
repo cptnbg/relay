@@ -152,18 +152,20 @@ which include the contents of `STATE/locks/run.d/owner`
 (`pid|epoch|host|run_id`). `relay resume` is the wrong instinct here: it will
 hit the same lock again immediately. Either wait for the real owner to finish,
 or confirm it is actually dead — `relay_lock` self-breaks a same-host lock
-whose pid is not running, or a cross-host lock older than
-`RELAY_LOCK_STALE_SECS * 4` (3600s by default), automatically on the next
-attempt.
+whose pid is verifiably not running, or a lock older than
+`RELAY_LOCK_STALE_SECS * 4` (3600s by default) when liveness cannot be
+established at all — another host, or a machine where `ps` does not work.
+It never breaks a lock merely because `ps` failed.
 
 ## 26 — `EX_FASTFAIL`
 
-- **Line 839** — one cause: `FASTFAIL` (incremented at line 814 whenever a
-  session's wall-clock duration was under `min_session_secs`, default 45)
-  reached `fastfail_limit` (default 3). `state_set status "blocked" reason
-  "fastfail"` — **the status string says `"blocked"`, not `"fastfail"`**;
-  only the `reason` field and the exit code itself distinguish it from an
-  `EX_BLOCKED` exit.
+- **Line 862** — one cause: `FASTFAIL` reached `fastfail_limit` (default 3).
+  It is incremented at line 839 only for a session that was BOTH unproductive
+  and shorter than `min_session_secs` (default 45); a session that committed
+  or wrote a valid handoff clears the streak however brief it was
+  (`:834-836`). `state_set status "blocked" reason "fastfail"` — **the status
+  string says `"blocked"`, not `"fastfail"`**; only the `reason` field and the
+  exit code itself distinguish it from an `EX_BLOCKED` exit.
 
 Look at the journal's `fastfail.streak` / `fastfail.tripped` lines and the
 most recent session logs' durations and `.err` files — a session dying in

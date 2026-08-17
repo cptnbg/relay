@@ -3,7 +3,10 @@
 #
 # Usage: bash relay-doctor.sh <project-dir> [state-dir] [--allow-dirty] [--quiet]
 # Exit:  0 all hard checks passed (warnings may still have printed)
-#        78 a hard check failed (EX_CONFIG)
+#        78 a hard check failed. Same number as the supervisor's EX_PREFLIGHT
+#           (relay-supervisor.sh:52), deliberately: doctor runs as the
+#           supervisor's first preflight step, so a doctor failure surfaces to
+#           the caller as a preflight failure and nothing else.
 #
 # Design note: doctor prints remedies, it does not apply them. It never
 # modifies anything outside relay's own state directory — a preflight tool that

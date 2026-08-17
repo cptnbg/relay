@@ -89,15 +89,15 @@ runner and fails on a user's Mac.
 
 Two things about *where* you run this:
 
-- **Run the suites from a normal shell, not from inside a relay session.**
-  `_relay_lock_try_break` establishes liveness with `ps -p`
-  (`plugins/relay/scripts/lib/relay-lib.sh:279`) and treats any non-zero return
-  as "the owner is dead". Inside relay's own sandbox `ps` is unavailable and
-  returns 127, so the lock breaks itself and `test/cases/c140_lock_contention.sh`
-  and `lock_second_fails` in `test/lib/test-relay-lib.sh` fail there — and only
-  there. Do not "fix" a red suite you produced by running it in the wrong place,
-  and do not release on a green suite you got by re-running one failing case in
-  isolation.
+- **Run the suites from a normal shell, not from inside a relay session.** They
+  pass in both places now, but the environments differ in ways a release should
+  not be certified against: `ps` does not work inside relay's sandbox, so the
+  lock takes its age-based fallback path (`lock.ps-unusable` in the journal)
+  rather than the pid-liveness path a user's machine will take. Certify against
+  the environment users have. This bullet exists because that difference once
+  hid a real fail-open bug behind a green suite on the host — see
+  `docs/portability.md`'s section on `ps`. Never release on a green suite you
+  got by re-running one failing case in isolation.
 - **The suites make no API calls.** `test/run.sh` puts a mock `claude`
   (`test/bin/claude`) first on `PATH`; the CI step comment says the same. If a
   release run appears on a billing statement, something is wrong and the release
@@ -130,13 +130,17 @@ to a known fingerprint proves nothing.
 
 ## 7. The archive and its sha256
 
+**Build a zip.** The marketplace schema's `archive` source takes a zip, not a
+tarball (see the shape below), so hash the artifact you are actually going to
+publish — a sha256 of a `.tar.gz` that nobody downloads pins nothing:
+
 ```
-git archive --format=tar.gz --prefix=relay-X.Y.Z/ -o relay-X.Y.Z.tar.gz vX.Y.Z
-shasum -a 256 relay-X.Y.Z.tar.gz     # macOS, and anywhere BSD-ish
-sha256sum relay-X.Y.Z.tar.gz         # GNU coreutils
+git archive --format=zip --prefix=relay-X.Y.Z/ -o relay-X.Y.Z.zip vX.Y.Z
+shasum -a 256 relay-X.Y.Z.zip        # macOS, and anywhere BSD-ish
+sha256sum relay-X.Y.Z.zip            # GNU coreutils
 ```
 
-Publish that sha256 next to the archive. Both commands are fine *here*:
+Publish that sha256 next to the archive. Both hashing commands are fine *here*:
 `test/lint/no-deps.sh:30` forbids `sha256sum` in relay's shipped shell, because
 it does not exist on stock macOS, but that linter scans `plugins/**/*.sh` only
 (`test/lint/no-deps.sh:12-14`). A release command typed by a human on a known
@@ -174,9 +178,9 @@ Three things the schema says that a release must respect:
 
 - The archive is a **zip**, and the plugin root — the directory holding
   `.claude-plugin/` — may sit at the top of it or one directory deep; a single
-  wrapping directory is stripped. The `git archive --format=tar.gz` invocation
-  above produces the hash for a tarball, so a release that pins a marketplace
-  entry needs a zip built the same way and hashed the same way.
+  wrapping directory is stripped. That is why the recipe above builds
+  `--format=zip` with a `--prefix`: the wrapping `relay-X.Y.Z/` directory is
+  stripped on install, and the `.claude-plugin/` inside it is found.
 - `sha256` is *optional* in the schema and mandatory by relay's own policy. An
   unpinned archive source tracks whatever is at that URL today, which is the
   supply-chain property this section exists to refuse.
