@@ -178,8 +178,19 @@ relay_git_collect_paths() {
 
       # A symlink is only safe if it resolves inside the repo. `ln -s ~/.ssh
       # secrets` would otherwise make host keys look repo-local.
+      #
+      # Resolve via the target's PARENT directory: `cd "$(readlink x)"` only
+      # works when the link points at a directory, and the links that matter
+      # here (id_rsa, .credentials.json) point at files. Resolving to empty
+      # happened to be treated as "escaping", so this was accidentally safe —
+      # but it also rejected every legitimate in-repo file symlink.
       if [ -L "$_p" ]; then
-        _dest=$( cd "$(dirname "$_p")" 2>/dev/null && cd "$(readlink "$_p")" 2>/dev/null && pwd )
+        _t=$(readlink "$_p")
+        case "$_t" in
+          /*) _tdir=$(dirname "$_t") ;;
+          *)  _tdir="$(dirname "$_p")/$(dirname "$_t")" ;;
+        esac
+        _dest=$( cd "$_tdir" 2>/dev/null && pwd )
         case "$_dest" in
           "$_root"|"$_root"/*) : ;;
           *) printf 'SKIP symlink-escapes-repo %s\n' "$_p" >&2; continue ;;

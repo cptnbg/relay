@@ -102,6 +102,18 @@ else
   ok "collect:reports-skip-reason (skipped: gitignore covers all probes)"
 fi
 
+# --- symlink resolution: file targets, not just directory targets ----------
+R=$(newrepo repo1b); cd "$R" || exit 1
+mkdir -p src lib
+printf 'real\n' > lib/real.txt
+ln -s ../lib/real.txt src/inside-link      # in-repo, points at a FILE
+ln -s /etc/hosts src/outside-file-link     # escapes, points at a FILE
+LIST=$(relay_git_collect_paths "$R" 2>/dev/null | tr '\0' '\n')
+case "$LIST" in *src/inside-link*) ok "symlink:keeps-in-repo-file-link" ;;
+                *) bad "symlink:keeps-in-repo-file-link" "dropped a legitimate in-repo link" ;; esac
+case "$LIST" in *outside-file-link*) bad "symlink:drops-escaping-file-link" ;;
+                *) ok "symlink:drops-escaping-file-link" ;; esac
+
 # --- commit path: clean ------------------------------------------------------
 R=$(newrepo repo2); cd "$R" || exit 1
 mkdir -p src; printf 'fine\n' > src/a.txt
