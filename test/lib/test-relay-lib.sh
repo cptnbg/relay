@@ -465,7 +465,15 @@ test_prune_sessions() {
   printf 'handoff\n'  > "$grp/handoffs/001-abc.json"
 
   relay_prune_sessions "$grp" 5 7
-  assert_eq "prune_keeps_five_logs" "5" "$(ls "$grp"/sessions/*.log 2>/dev/null | grep -vc '\.err$')"
+  # Counted with a glob and a loop rather than `ls | grep -vc`: shellcheck
+  # rejects that pipeline at the severity CI runs (SC2010), and this is the
+  # only file in the repository that ever tripped it. `*.log` does not match
+  # `*.log.err`, so the exclusion the grep was doing is already the glob's job.
+  _kept=0
+  for _f in "$grp"/sessions/*.log; do
+    [ -f "$_f" ] && _kept=$((_kept + 1))
+  done
+  assert_eq "prune_keeps_five_logs" "5" "$_kept"
   assert_eq "prune_drops_sibling_err" "5" "$(ls "$grp"/sessions/*.log.err 2>/dev/null | wc -l | tr -d ' ')"
 
   # The five kept are the NEWEST five, not an arbitrary five.
