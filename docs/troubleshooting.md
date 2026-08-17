@@ -27,7 +27,12 @@ order these run in is `docs/architecture.md` §1a.
   (`relay-supervisor.sh:173-177`). Run it directly for the full report:
   `bash plugins/relay/scripts/relay-doctor.sh <project> <state>`, or
   `/relay doctor` (`SKILL.md:193-200`). It prints `FAIL`/`fix:` lines and
-  never modifies anything itself.
+  applies none of them: it modifies nothing *outside relay's own state
+  directory* (`relay-doctor.sh:8-10`). Inside it, doctor does write — it
+  creates `$STATE` and round-trips a `.doctor-probe.$$` file it then
+  deletes, which is how it proves atomic rename works there
+  (`relay-doctor.sh:219-228`). Your repository and your configuration are
+  untouched either way.
 - **The sandbox probe failed.** See the next entry.
 
 Two rarer causes: a window that clears the 100,000 floor can still be
@@ -176,17 +181,26 @@ Three places to look, in order of how often they update:
 - **`$STATE/sessions/<NNN>-<uuid>.log` and `.log.err`** — the current
   session's output. A working session still has a live `claude -p`
   process — check `ps aux | grep 'claude -p'`.
-- **`$STATE/run/ctx.log`** — one line per context-guard call
-  (`relay-ctx.sh:253-256`). A healthy line looks like:
+- **`$STATE/run/ctx.log`** — one line per context-guard call that
+  actually samples the transcript (`relay-ctx.sh:253-256`). That is *not*
+  every tool call: the guard throttles itself against the age of its last
+  sample, skipping the whole active path — including this log — when the
+  previous one is under 30 seconds old below 40% context, or under 15
+  seconds old from 40% (`relay-ctx.sh:148-164`). From 55% the interval is
+  0, so every call samples. A healthy line looks like:
 
   ```
   1737091200 pct=42 used=84210 level=0 calls=6
   ```
 
-  (`epoch pct=<%window> used=<tokens> level=<0-3> calls=<count>`). Not
-  growing for a while? Check `$STATE/run/hook.alive`, touched on every
-  live hook call whether or not it emits a message
-  (`relay-ctx.sh:178,182`).
+  (`epoch pct=<%window> used=<tokens> level=<0-3> calls=<count>`). A gap
+  between lines is normal at low context — that is the throttle, not a
+  stall. `calls=` is incremented on *every* invocation, before the
+  throttle (`relay-ctx.sh:142`), so `calls=` jumping by more than one
+  between consecutive lines is the guard working as designed, not lost
+  events. Not growing at all for a while? Check `$STATE/run/hook.alive`,
+  touched by every call that gets past the throttle whether or not it
+  emits a message (`relay-ctx.sh:178,182`).
 
 If nothing is updating and the supervisor is gone, the reason should be in
 `state.json`'s `status` and the journal's last few lines.
@@ -207,9 +221,15 @@ code the supervisor is currently running can be the same five files.
 The mitigation is procedural: a run whose plan touches relay's own
 executables should treat those files as read-only and record any genuine
 bug found in them, with evidence, rather than editing them live — land the
-fix in a separate, non-self-hosted run. State this in `RUN.md`'s
-guardrails section; nothing in relay's preflight or sandbox detects "the
-target repository is the one currently running me."
+fix in a separate, non-self-hosted run. State the read-only rule in
+`RUN.md`'s guardrails section, but route each finding to
+`$STATE/HUMAN-TASKS.md` — that is where relay's own session prompt tells a
+session to put anything only a human can act on
+(`relay-supervisor.sh:409`), and it is the convention this repository's
+own plan uses (`docs/phase5-publish-plan.md:132-134`). Appending findings
+to `RUN.md` instead buries them inside the mission text that every later
+session re-reads as instructions. Nothing in relay's preflight or sandbox
+detects "the target repository is the one currently running me."
 
 ## How do I stop a run right now?
 
@@ -250,19 +270,26 @@ What it means: `verify_complete()` compares the live commit count against
 `commits_at_start`, captured once when the supervisor starts, from `git
 rev-list --count HEAD` (`relay-supervisor.sh:532-533`). The comparison is
 `[ -n "$_start" ] && [ "${_now:-0}" -le "$_start" ]`
-(`relay-supervisor.sh:480`). Note what that guard does: it does not give
-`$_start` a safe numeric default when empty — it skips the whole
-comparison. This is a recorded open item, not fixed here: if
-`commits_at_start` was ever recorded empty (e.g. `git rev-list --count
-HEAD` produced nothing at startup), the no-commits safety check silently
-stops applying for the rest of that run, rather than failing toward the
-safer answer — and it is the code path a spurious "no progress" report
-needs to be diagnosed against.
+(`relay-supervisor.sh:480`), where `$_now` is read fresh one line earlier
+(`:478`) by the same command, with stderr discarded.
 
-What to run: compare `state.json`'s `commits_at_start` against `git
-rev-list --count HEAD` in the project; a mismatch against what the run
-actually did is what this item concerns. Known open defect for the
-maintainer — do not hand-edit `relay-supervisor.sh` to work around it.
+The path that produces *this* symptom is `$_now`, not `$_start`. If that
+`rev-list` at `:478` fails or prints nothing — a git error inside
+`$PROJECT`, an index lock, a detached or unborn `HEAD` — the failure is
+swallowed and `${_now:-0}` substitutes `0`, which is `-le` any real
+`$_start`. `COMPLETE.md` is then rejected with `no commits were made`
+even though the commits are right there in `git log`. Note that
+`commits_at_start` being *empty* is the opposite bug and does not cause
+this: an empty `$_start` fails the `[ -n "$_start" ]` test and skips the
+comparison entirely, so the run over-accepts rather than over-rejects.
+Both are recorded open items for the maintainer; neither is fixed here.
+
+What to run: in `$PROJECT`, run `git rev-list --count HEAD` yourself and
+check it both succeeds and prints a number, then compare it against
+`state.json`'s `commits_at_start`. If the command works by hand, look for
+what made it fail under the supervisor — most often a stale
+`.git/index.lock` left by another tool. Do not hand-edit
+`relay-supervisor.sh` to work around it.
 
 ## Relay gave up with EX_FASTFAIL after some short but productive sessions
 

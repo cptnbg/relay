@@ -1,6 +1,7 @@
 # Probe / session scratch output
 *.out
 *.err
+*.log
 .DS_Store
 
 # Babysitter plugin runtime state — never part of this repo

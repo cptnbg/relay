@@ -22,12 +22,15 @@ you.
 
 ```
 PROJECT = the git repository being built (the user's cwd unless stated)
-STATE   = ~/.local/state/relay/projects/<sha256 of PROJECT realpath>
+STATE   = ~/.local/state/relay/projects/<git blob hash of PROJECT realpath>
 ```
 
 State lives **outside the repository** deliberately: the repo is writable by the
 agent and by anything a build script runs, so relay's own files must not sit
-where they can be replaced with symlinks. Compute STATE with:
+where they can be replaced with symlinks. The directory name is the 40-hex
+SHA-1 git blob hash of the path — `git hash-object`, not `sha256sum`, because
+git is already a hard dependency and `sha256sum` is not portable. Compute STATE
+with:
 
 ```bash
 PROJ=$(cd "<project>" && pwd)
