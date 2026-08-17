@@ -77,6 +77,30 @@ delivered per-invocation, so nothing relay installs runs in your other sessions.
 /plugin install relay@relay
 ```
 
+## Verify what you installed
+
+Release tags are signed. Before you trust one:
+
+```
+git verify-tag vX.Y.Z
+```
+
+Then check the reported signing key against the maintainer's fingerprint:
+
+```
+PLACEHOLDER — maintainer GPG key fingerprint is not published yet
+```
+
+**That is a placeholder, not a fingerprint, and the difference matters.** Until
+the real value is recorded here, `git verify-tag` tells you only that *some*
+key signed the tag — it says nothing about whose. Do not treat "any valid
+signature" as verification.
+
+`RELEASING.md` is the procedure that produces those tags, including why the
+marketplace entry pins a release archive by sha256 instead of tracking a
+mutable branch, and the rule that relay never auto-updates: upgrading is
+something you do deliberately, after reading the diff.
+
 ## Use
 
 ```
@@ -163,8 +187,35 @@ the repository.
 | 21 / 26 | no progress across several sessions / sessions exiting immediately |
 | 22 / 23 / 24 | repeated timeouts / session cap / you asked it to stop |
 | 25 | another supervisor holds this project |
-| 27 / 29 | repeated false completion claims / budget or usage limit |
+| 27 | repeated false completion claims |
+| 28 | relay could not create or write its own state directory |
+| 29 | your total budget is spent, **or** the provider's usage limit outlasted relay's retries |
 | 78 | preflight failed — relay never started |
+
+Those last two are one exit code with two opposite remedies: `state.json`'s
+`status` is `budget` when your configured spend is exhausted (raise it or stop)
+and `usage-limit` when the provider throttled you and relay gave up waiting
+(wait, then `/relay-resume`). `docs/exit-codes.md` has the full table, one row
+per code, each checked against the line that returns it.
+
+## Documentation
+
+- [`docs/architecture.md`](docs/architecture.md) — how the chain loop actually
+  works: why `claude`'s exit code is never trusted, what is checked instead and
+  in what order, the state layout, the handoff schema, the model ladder, and
+  where the context guard sits.
+- [`docs/exit-codes.md`](docs/exit-codes.md) — every code the supervisor can
+  return, what to look at first, and whether `/relay-resume` is the right move.
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — symptom first. Start
+  here when something looks wrong.
+- [`docs/portability.md`](docs/portability.md) — the dependency policy, the
+  bash 3.2 constraints, and what the two linters refuse.
+- [`docs/security.md`](docs/security.md) — the Claude Code behaviours relay
+  depends on, each verified empirically rather than assumed.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to run the suites, what the paid
+  probes are for, and which changes need a second maintainer.
+- [`RELEASING.md`](RELEASING.md) — the release procedure, written to be
+  followed exactly.
 
 ## Testing
 
