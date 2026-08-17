@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "relay",
+  "version": "0.1.0",
+  "description": "Run a long multi-phase build to completion across automatically chained Claude Code sessions, refreshing context before quality degrades.",
+  "author": {
+    "name": "Boris Griggs",
+    "url": "https://github.com/cptnbg"
+  },
+  "homepage": "https://github.com/cptnbg/relay",
+  "repository": "https://github.com/cptnbg/relay",
+  "license": "MIT",
+  "keywords": ["automation", "long-running", "context", "handoff", "sandbox", "unattended"]
+}

@@ -1,0 +1,21 @@
+{
+  "max_sessions": 12,
+  "session_timeout_secs": 5400,
+  "stall_limit": 3,
+  "fastfail_limit": 3,
+  "min_session_secs": 45,
+  "max_timeouts": 2,
+  "review_every": 5,
+
+  "budget_usd_per_session": 2.00,
+  "budget_usd_total": 20.00,
+
+  "model_tier": "opus",
+  "window_opus": 200000,
+  "window_sonnet": 200000,
+  "window_fable": 200000,
+  "max_fable_sessions": 3,
+
+  "on_limit": "wait",
+  "max_usage_retries": 20
+}
