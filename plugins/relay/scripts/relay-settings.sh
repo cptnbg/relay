@@ -32,11 +32,18 @@ IFS=$' \t\n'
 # --safe-mode                    : disables ALL customizations, including relay's
 #                                  own hooks, while permissions "work normally".
 #                                  It is a troubleshooting flag, not a sandbox.
-RELAY_FORBIDDEN_FLAGS="--dangerously-skip-permissions --bare --no-session-persistence --safe-mode"
-
-# Verified Critical: without BOTH of these a cloned repo's .claude/settings.json
-# hook executes and its .mcp.json loads, with no trust prompt, under -p.
-RELAY_REQUIRED_FLAGS="--setting-sources --strict-mcp-config"
+# Forbidden: --dangerously-skip-permissions, --bare, --no-session-persistence,
+#            --safe-mode
+# Required:  --setting-sources, --strict-mcp-config
+#
+# Verified Critical (docs/security.md): without BOTH required flags, a cloned
+# repo's .claude/settings.json hook executes and its .mcp.json loads, with no
+# trust prompt, under -p.
+#
+# These lists live in the `case` statement in relay_settings_assert_argv rather
+# than in variables. A string variable would have to be word-split to match,
+# splitting behaves differently across shells, and a guard that silently
+# degrades to matching nothing is worse than no guard at all.
 
 # Paths whose contents must never be readable by sandboxed commands.
 relay_settings_default_denyread() {
