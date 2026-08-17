@@ -178,17 +178,26 @@ relay_settings_build() {
   _extra_domains="${4:-}"
 
   # api.anthropic.com is required or the session cannot talk to the API at all.
-  _domains=$(printf 'api.anthropic.com\n')
-  if [ -n "$_extra_domains" ]; then
-    _domains="$_domains$(printf '%s\n' "$_extra_domains" | tr ',' '\n')"
-  fi
+  #
+  # Assembled as lines through a pipe, not by string concatenation: command
+  # substitution strips the trailing newline, so appending one $(...) to another
+  # glued the first extra domain onto api.anthropic.com and destroyed BOTH
+  # ("api.anthropic.comregistry.npmjs.org"). That went unnoticed because no
+  # caller ever passed an extra domain. `awk '!seen'` de-duplicates while
+  # preserving order, so listing api.anthropic.com again is harmless.
+  _domains_json=$(
+    { printf 'api.anthropic.com\n'
+      if [ -n "$_extra_domains" ]; then printf '%s\n' "$_extra_domains" | tr ',' '\n'; fi
+    } | grep -v '^[[:space:]]*$' | awk '!seen[$0]++' | jq -R . | jq -s .
+  ) || return 1
+  [ -n "$_domains_json" ] || return 1
 
   jq -nc \
     --arg proj "$_proj" \
     --arg state "$_state" \
     --arg hook "$_hook" \
     --arg tmp "${TMPDIR:-/tmp}" \
-    --argjson domains "$(printf '%s\n' "$_domains" | grep -v '^[[:space:]]*$' | jq -R . | jq -s .)" \
+    --argjson domains "$_domains_json" \
     --argjson denyread "$(relay_settings_default_denyread | jq -R . | jq -s .)" \
     --argjson allow "$(relay_settings_default_allow | jq -R . | jq -s .)" \
     --argjson deny "$( { relay_settings_default_deny; relay_settings_default_deny_writes; } | jq -R . | jq -s .)" \

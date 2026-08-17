@@ -174,7 +174,28 @@ if ! bash "$SELF_DIR/relay-doctor.sh" "$PROJECT" "$STATE" ${RELAY_ALLOW_DIRTY:+-
   exit "$EX_PREFLIGHT"
 fi
 
-SETTINGS=$(relay_settings_build "$PROJECT" "$STATE" "$HOOK") || {
+# Extra egress the project genuinely needs — a package registry, typically.
+# Without this the allowlist is only api.anthropic.com, so `npm ci` fails inside
+# the sandbox with no way to configure it and no obvious cause. A hostname list
+# is a non-command value, so it is safe in the shareable config tier: the worst
+# a hostile repo can do with it is widen its OWN sandbox's egress, which is
+# already the tier where every other network decision is made.
+#
+# Validated as hostnames rather than trusted. A garbage entry would otherwise be
+# accepted into the payload, and the probe cannot detect a domain that merely
+# never matches — it would only surface later as an inexplicable network failure.
+ALLOW_DOMAINS=$(cfg allow_domains "")
+if [ -n "$ALLOW_DOMAINS" ]; then
+  case "$ALLOW_DOMAINS" in
+    *[!A-Za-z0-9.,_-]*|.*|,*|*,,*)
+      relay_journal "config.allow-domains-invalid" "$(printf '%s' "$ALLOW_DOMAINS" | head -c 120)"
+      printf 'relay: allow_domains must be a comma-separated hostname list\n' >&2
+      exit "$EX_PREFLIGHT" ;;
+  esac
+  relay_journal "sandbox.extra-domains" "$ALLOW_DOMAINS"
+fi
+
+SETTINGS=$(relay_settings_build "$PROJECT" "$STATE" "$HOOK" "$ALLOW_DOMAINS") || {
   relay_journal "settings.build-failed" ""; exit "$EX_PREFLIGHT"; }
 
 # Prove the payload is actually enforced before running anything unattended.
