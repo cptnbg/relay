@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck -s bash -S warning \
+            plugins/relay/scripts/*.sh \
+            plugins/relay/scripts/lib/*.sh \
+            plugins/relay/hooks/*.sh \
+            test/run.sh test/lib/*.sh test/lint/*.sh test/bin/claude
+
+      # macOS ships bash 3.2.57. A bash-4ism passes on this runner and fails on
+      # a user's Mac, so it has to be caught by pattern rather than by running.
+      - name: no bash 4+ constructs
+        run: bash test/lint/no-bash4.sh
+
+      # Keeps the README's "no node, no python, no coreutils" promise honest.
+      - name: no forbidden dependencies
+        run: bash test/lint/no-deps.sh
+
+      - name: manifests are valid json
+        run: |
+          for f in .claude-plugin/marketplace.json \
+                   plugins/relay/.claude-plugin/plugin.json \
+                   plugins/relay/config/defaults.json; do
+            jq -e . "$f" > /dev/null || { echo "invalid: $f"; exit 1; }
+          done
+
+      # plugin.json and the marketplace entry drifting apart is the single most
+      # common cause of "I installed it but I'm on an old version".
+      - name: plugin and marketplace versions agree
+        run: |
+          a=$(jq -r .version plugins/relay/.claude-plugin/plugin.json)
+          b=$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)
+          echo "plugin.json=$a marketplace=$b"
+          [ "$a" = "$b" ] || { echo "version mismatch"; exit 1; }
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install jq (macos)
+        if: runner.os == 'macOS'
+        run: brew list jq >/dev/null 2>&1 || brew install jq
+
+      # Proves the suite never quietly depends on coreutils. `timeout` exists on
+      # ubuntu, so relay's own watchdog must be what is under test there too.
+      - name: assert coreutils timeout is absent (macos)
+        if: runner.os == 'macOS'
+        run: |
+          if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+            echo "coreutils is installed on this runner; the suite would not prove independence"
+            exit 1
+          fi
+
+      - name: record bash version
+        run: bash --version | head -1
+
+      - name: unit suites
+        run: |
+          bash test/lib/test-relay-lib.sh
+          bash test/lib/test-relay-git.sh
+
+      # No API calls: the mock `claude` is first on PATH for the whole run.
+      - name: hook and supervisor suites
+        run: bash test/run.sh
+
+      # macOS /bin/bash IS 3.2.57 — run the suite explicitly under it so the
+      # real floor is exercised, not just whatever bash the runner defaults to.
+      - name: rerun under system bash 3.2 (macos)
+        if: runner.os == 'macOS'
+        run: /bin/bash test/run.sh
+
+      - name: keep sandboxes on failure
+        if: failure()
+        run: echo "re-run locally with RELAY_TEST_KEEP=1 to inspect sandboxes"
