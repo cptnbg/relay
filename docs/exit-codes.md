@@ -56,7 +56,8 @@ output) and the journal's `complete.verified` line. Nothing to resume.
 
 ## 20 — `EX_BLOCKED`
 
-Four distinct causes, only two of which write `BLOCKED.md` themselves.
+Four distinct causes. All four leave a `BLOCKED.md` behind: two are sealed by
+the session itself, and two are written by relay.
 
 - **Line 547** — pre-spawn: `BLOCKED.md` was already sealed on entry.
   `state_set status "blocked"`. Look at `STATE/BLOCKED.md`.
@@ -73,10 +74,15 @@ Four distinct causes, only two of which write `BLOCKED.md` themselves.
 - **Line 774** — `relay_git_commit` returned 1: a probable credential was
   found in the staged diff and nothing was committed.
   `state_set status "blocked" reason "secret-detected"` at line 773.
-  **No `BLOCKED.md` is written for this cause** — check the journal's
-  `commit.secret-blocked` line, the supervisor's own stdout/stderr (not the
-  session log; `relay_git_commit` prints the matched pattern and location,
-  never the secret itself), and `git status`/`git diff` in the project.
+  A `BLOCKED.md` **is** written for this cause, by `relay-git.sh` rather than
+  by the supervisor: line 768 passes `$STATE` as `relay_git_commit`'s third
+  argument, and `relay-git.sh:268-283` writes a sealed `BLOCKED.md` there
+  listing the matched locations with the values withheld. Also check the
+  journal's `commit.secret-blocked` line and the supervisor's own
+  stdout/stderr (not the session log; `relay_git_commit` prints the matched
+  pattern and location, never the secret itself), then `git status`/`git diff`
+  in the project. Note the staged changes were reset (`relay-git.sh:265`) and
+  nothing was committed; the working tree is untouched.
 
 `relay resume` is conditional in every case: for the two `BLOCKED.md` causes,
 resuming without addressing what the file asks for reproduces the same block
@@ -253,17 +259,23 @@ between sessions, never mid-session.
 | 245 | the sandbox enforcement probe (`relay_settings_probe`) failed | `probe.failed` |
 | 611 | the per-session argv assertion (`relay_settings_assert_argv`) failed before spawning | `argv.assert-failed` |
 
-Lines 38, 83, 123, 222, and 228 all run **before `state.json` is
-initialized** (state setup starts at line 145), so none of them call
-`state_set` — there is no status to read for those five. Line 38 is also the
+Seven of the nine call no `state_set` at all, so for those there is no status
+to read. Three of them — lines 38, 83 and 123 — run **before `state.json`
+exists**: the file is created at line 145 and the first `state_set` runs at
+line 150, so they could not record a status even if they wanted to. The other
+four — 196, 222, 228 and 611 — run *after* state is initialized and simply do
+not set one, leaving `status` at whatever it was. Do not read "no status" as
+"never got that far". Line 38 is also the
 only cause with no journal line at all: it predates `RELAY_JOURNAL` being
 exported (line 45) and the code path itself has no `relay_journal` call, so
 stderr is the sole evidence. The other eight (83, 123, 176, 196, 222, 228,
 245, 611) all journal a distinct event named in the table's row above.
-Of the nine, only line 176 sets `state_set status "preflight-failed"` (line
-175) and line 245 sets `state_set status "preflight-failed" reason
-"sandbox-not-enforced"` (line 244); the remaining seven set no status,
-leaving `status` at whatever it last was (often still `"running"`).
+
+The two that *do* record a status are line 176 — `state_set status
+"preflight-failed"` (line 175) — and line 245 — `state_set status
+"preflight-failed" reason "sandbox-not-enforced"` (line 244). For every other
+cause, a `status` of `"running"` in `state.json` after an `EX_IO` exit is
+stale, not a live run.
 
 `relay resume` is never the right first move for any of these: nothing ran,
 so resuming without changing the reported cause reproduces the exact same

@@ -67,11 +67,21 @@ session is launched:
 8. Validate any extra sandbox egress domains as a plain hostname list
    (`:206-225`).
 9. Build the `--settings` JSON payload (`:227-228`, see §7) and **prove** the
-   sandbox it describes is actually enforced by running a real probe session
-   against a relay-owned canary file, unless a cached fingerprint for the
-   same payload + CLI version already proved it (`:230-248`). If the probe
-   cannot confirm both a blocked read and blocked egress, relay refuses to
-   start (`relay-settings.sh:322-333`).
+   filesystem half of the sandbox it describes is actually enforced by running
+   a real probe session against a relay-owned canary file, unless a cached
+   fingerprint for the same payload + CLI version already proved it
+   (`:230-248`). `relay_settings_probe()` (`relay-settings.sh:289-336`) appends
+   the canary path to `sandbox.filesystem.denyRead`, asks a cheap session to
+   `cat` it, and refuses to start if the canary's value appears in either the
+   JSON output or stderr (`:322-326`), or if the probe session did not complete
+   cleanly — `.is_error == false` (`:330-333`).
+
+   Be precise about what that proves. Despite the function's own comment at
+   `relay-settings.sh:278-280`, which claims both a blocked read *and* blocked
+   egress are confirmed, the probe makes **no network call at all**. Egress
+   restriction is configured in the payload and never positively verified at
+   startup; only `denyRead` is. Read the comment as the intent, the body as the
+   behaviour.
 10. Hash the plan file and set `status: running` (`relay-supervisor.sh:250-251`).
 
 Only then does the `while :; do` loop start (`:537`). On its first pass the
@@ -273,7 +283,7 @@ Top-level files, all written by the supervisor or by sessions it launches:
 | `RUN.md` | Mission, acceptance criteria, guardrails, decisions already made; written once at `/relay-init`, read by every session (`SKILL.md:68-81`, `relay-supervisor.sh:391`) | Yes — the primary document a human reviews before and during a run |
 | `config.json` | Settings only, never commands (`SKILL.md:83-85,187-189`); read via `cfg()` (`relay-supervisor.sh:54-71`) | Occasionally, to check caps |
 | `exec.json` | The approved `acceptance_cmd` argv array (`SKILL.md:175-190`), validated at `relay-supervisor.sh:76-85` | Occasionally, to check what runs |
-| `state.json` | Machine state: `run_id`, `status`, `session_count`, `stall_count`, `fastfail_streak`, `fable_used`, `next_mode`, `next_tier`, `cost_total`, `ctx_baseline`, `last_review_n`, `complete_rejections`, `commits_at_start`, `plan_hash` (written throughout via `state_set`, e.g. `:150,251,533,680,854-857`) | Yes, via `/relay-status` (`SKILL.md:134-144`) |
+| `state.json` | Machine state: `run_id`, `status`, `reason`, `session_count`, `stall_count`, `fastfail_streak`, `fable_used`, `next_mode`, `next_tier`, `cost_total`, `ctx_baseline`, `last_review_n`, `complete_rejections`, `commits_at_start`, `plan_hash`, `human_tasks`, `last_session_rc`, `timeouts` (written throughout via `state_set`, e.g. `:150,244,251,533,680,773,854-857`) | Yes, via `/relay-status` (`SKILL.md:134-144`) |
 | `journal.log` | Tab-separated `epoch\tevent\tdetail` audit trail (`relay_journal`, `lib/relay-lib.sh:43-50`), set as `RELAY_JOURNAL` (`relay-supervisor.sh:45`) | Yes — `tail -f` is the documented way to watch a run (`SKILL.md:127`) |
 | `continue.json` | The live handoff; see §5 | Not normally — schema-validated machine state (`SKILL.md:207-208`) |
 | `HUMAN-TASKS.md` | Non-blocking items a session appended instead of stopping (`relay-supervisor.sh:409`); counted at `:853` | Yes — the intended place a human catches up |
@@ -325,8 +335,11 @@ prose:
 
 `handoff_valid()` (`relay-supervisor.sh:297-309`) requires `next` to be a
 non-empty array, `done` to be an array, every string in all four arrays to
-be at most 280 characters, at most 12 entries per array, and the whole file
-at most 8192 bytes. A handoff that fails this shape check outright — not
+be at most 280 characters (`:302-303`), at most 12 entries in `done` and at
+most 12 in `next` (`:304` — note it bounds only those two arrays, not
+`files_touched` or `open_questions`), and the whole file at most 8192 bytes.
+The 12-entry cap on all four arrays is real, but it is applied by
+`handoff_normalize()` (`:286-289`) before this check runs, not by this check. A handoff that fails this shape check outright — not
 JSON, missing `next`, wrong types — is dropped, and the next session runs in
 recovery mode (`:789-792`).
 
@@ -361,11 +374,18 @@ cannot carry a stale fence marker forward into a later run (`:154-157`).
 The schema is the point, not an implementation detail: the comment
 introducing this whole section states it plainly — "a structured document,
 validated. Free-form prose is where prompt injection lives, so the schema is
-the mitigation, not an afterthought" (`:254-256`). The guardrail-drift
-detector (§3, predicate 5) only inspects the four defined array fields
-(`:337-340`), and the injection filter only inspects rendered lines from
-those same fields (`:313,323,327-330`) — there is no free-text field for an
-injected instruction to hide in. This is a deliberate design boundary: it
+the mitigation, not an afterthought" (`:254-256`). There is no free-text
+field for an injected instruction to hide in — every field is a defined array
+of bounded strings.
+
+Two of the scanners are narrower than the schema, and it matters where. The
+line filter inside `handoff_render()` greps **all four** rendered arrays
+(`:318-324`), so nothing injected survives into the prompt from any field.
+But `handoff_guardrail_drift()` (`:337-340`) and `handoff_flagged_lines()`
+(`:327-330`) both read only `done`, `next` and `open_questions` —
+`files_touched` is excluded from both. Guardrail-drift text placed in
+`files_touched` is therefore filtered out of the prompt but does **not** trip
+the `EX_BLOCKED` halt or the audit journal line. This is a deliberate design boundary: it
 should not be loosened back toward free-form prose, because prose is
 precisely the channel this schema exists to close off.
 
