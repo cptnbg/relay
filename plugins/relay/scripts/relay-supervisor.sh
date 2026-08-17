@@ -824,16 +824,21 @@ while :; do
     TIMEOUTS=0
   fi
 
-  if [ "$PRODUCTIVE" -eq 1 ] && [ "$DUR" -ge "$MIN_SESSION_SECS" ]; then
+  # A productive session clears both counters however brief it was. The
+  # fast-fail breaker exists to catch sessions that die on startup — a bad
+  # session id, a broken payload, an auth failure — and those produce nothing.
+  # Counting *productive* short sessions meant three quick, correct steps in a
+  # row halted a healthy run with EX_FASTFAIL, which is a circuit breaker
+  # tripping on success. Both counters are therefore gated on the same
+  # condition: nothing came out of this session.
+  if [ "$PRODUCTIVE" -eq 1 ]; then
     FASTFAIL=0; STALL=0
   else
+    STALL=$((STALL + 1))
+    relay_journal "stall.count" "$STALL/$STALL_LIMIT"
     if [ "$DUR" -lt "$MIN_SESSION_SECS" ]; then
       FASTFAIL=$((FASTFAIL + 1))
       relay_journal "fastfail.streak" "$FASTFAIL/$FASTFAIL_LIMIT dur=${DUR}s"
-    fi
-    if [ "$PRODUCTIVE" -eq 0 ]; then
-      STALL=$((STALL + 1))
-      relay_journal "stall.count" "$STALL/$STALL_LIMIT"
     fi
     # Escalate before giving up: a smarter model is strictly better than a halt.
     if [ "$STALL" -eq $((STALL_LIMIT - 1)) ] || [ "$FASTFAIL" -eq $((FASTFAIL_LIMIT - 1)) ]; then
