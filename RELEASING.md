@@ -156,11 +156,39 @@ plugin from the relative path `./plugins/relay`, because the marketplace and the
 plugin live in one repository and there is no separate archive to pin. The rule
 above binds the moment that changes.
 
-**PLACEHOLDER — checksum field name.** The exact key the marketplace schema
-uses for an archive checksum has not been verified by anyone who wrote this
-file. Take it from `claude plugin validate --strict`, which is the authority,
-and correct this section once you have. Do not guess a key name into a manifest
-that a user's install will trust.
+The key is `sha256`, a sibling of `url` inside the source object. Taken from
+the validator's own schema in the Claude Code 2.1.234 binary rather than
+guessed, along with its description: *"SHA-256 digest of the archive. When set,
+every download is verified against it and the install is refused on mismatch."*
+The shape is:
+
+```json
+{
+  "source": "archive",
+  "url": "https://github.com/cptnbg/relay/releases/download/vX.Y.Z/relay-X.Y.Z.zip",
+  "sha256": "<64 lowercase hex characters>"
+}
+```
+
+Three things the schema says that a release must respect:
+
+- The archive is a **zip**, and the plugin root — the directory holding
+  `.claude-plugin/` — may sit at the top of it or one directory deep; a single
+  wrapping directory is stripped. The `git archive --format=tar.gz` invocation
+  above produces the hash for a tarball, so a release that pins a marketplace
+  entry needs a zip built the same way and hashed the same way.
+- `sha256` is *optional* in the schema and mandatory by relay's own policy. An
+  unpinned archive source tracks whatever is at that URL today, which is the
+  supply-chain property this section exists to refuse.
+- The digest doubles as version identity when neither `plugin.json` nor the
+  marketplace entry declares a `version`. Relay declares one in both, so the
+  digest is a check and never the identity — but changing only the digest is
+  therefore not, on its own, an update signal to an installed client. Bump the
+  version.
+
+Re-confirm this against `claude plugin validate --strict` at release time. It
+is the authority, and the schema can move between CLI versions — which is
+exactly why relay records the CLI version at doctor time.
 
 ## 8. relay never auto-updates
 
