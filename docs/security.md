@@ -61,7 +61,34 @@ blocked identically to a bare `curl`.
 The control case matters as much as the blocked cases: without it, a probe that "passes"
 might simply be failing to observe.
 
-### 4. `--output-format json` result fields (2.1.233)
+### 4. Relay's hooks run *inside* the sandbox's filesystem policy
+
+Probe `probe0-integration.sh` runs relay's real payload — sandbox and hooks together.
+Exec-form hooks (`command: "bash", args: [path]`) fire correctly when delivered through
+`--settings`, including when the hook path and the project path both contain spaces. Exec
+form is used regardless, because shell form re-parses the substituted path.
+
+The trap: **a hook that writes outside `sandbox.filesystem.allowWrite` fails silently, and
+the symptom is indistinguishable from "the hook never fired."** This cost real debugging
+time during Phase 0. Relay's state directory is in `allowWrite` by construction, and the
+context guard writes only there — but any future hook must respect the same rule, and the
+test suite asserts it.
+
+Related, and worth knowing before writing a probe: **a sandbox-blocked tool call does not
+necessarily emit a `PostToolUse` event.** A probe whose only tool call is the blocked one
+cannot distinguish "hook never fired" from "there was nothing to fire on", so every hook
+probe must include at least one *successful* tool call.
+
+Hook stdin keys observed on 2.1.233 (`PostToolUse`):
+
+```
+cwd, duration_ms, hook_event_name, permission_mode, prompt_id, session_id,
+tool_input, tool_name, tool_response, tool_use_id, transcript_path
+```
+
+`session_id` and `transcript_path` are both present, which is what the context guard needs.
+
+### 5. `--output-format json` result fields (2.1.233)
 
 ```
 type, subtype, is_error, result, session_id, uuid, num_turns, total_cost_usd,
