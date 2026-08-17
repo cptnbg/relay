@@ -541,6 +541,16 @@ while :; do
   DUR=$(( $(date +%s) - START_TS ))
   relay_journal "session.exit" "n=$N rc=$RC dur=${DUR}s"
 
+  # Why it ended, taken from the envelope. The exit code cannot tell "handed off
+  # as designed" from "ran out of money": both can be non-zero. Reading the first
+  # real run's journal, `rc=1 dur=295s` looked like a crash and was in fact a
+  # budget cap, which took a jq dive over the session log to establish. One line
+  # here is the difference between a legible overnight journal and an autopsy.
+  _why=$(jq -rs "$LIMIT_JQ"' | [(.subtype // ""), (.terminal_reason // "")]
+                              | map(select(. != "" and . != "success")) | join(" ")' \
+         < "$SLOG" 2>/dev/null)
+  [ -n "$_why" ] && relay_journal "session.reason" "n=$N $_why"
+
   _cost=$(jq -r '.total_cost_usd // 0' < "$SLOG" 2>/dev/null)
   case "$_cost" in ''|*[!0-9.]*) _cost=0 ;; esac
   COST_TOTAL=$(printf '%s %s\n' "$COST_TOTAL" "$_cost" | awk '{printf "%.4f", $1 + $2}')

@@ -22,3 +22,20 @@ recorded user consent.
 - `relay doctor` preflight gate.
 - Zero-API-cost test harness: mock `claude`, runner, 27 hook tests, git and
   primitive suites.
+- `permissions.allow` in the settings payload. Under `--permission-mode dontAsk`
+  anything not explicitly allowed is refused, so a deny-only payload produced
+  sessions that could not write a file.
+- Preflight refusal for a context window below 100k, with the reason: a session
+  holds tens of thousands of tokens before its first tool call, so a smaller
+  window makes the guard fire critical immediately and forever.
+- `test/lint/probe0-permission-mode.sh`, the paid probe recording the above
+  against the real CLI, including that `deny` still beats a broad `allow`.
+
+### Fixed
+- Usage-limit detection read the whole session log, so any log containing the
+  digits `429` — a session uuid was enough — was discarded and re-run. It now
+  reads the result envelope, and a successful result is never a usage limit
+  whatever its prose says.
+- The acceptance command was re-quoted into a string and `eval`'d, which gave a
+  shell to any element containing a quote. Elements now load into positional
+  parameters and execute directly.

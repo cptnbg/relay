@@ -348,6 +348,12 @@ write_blocked_md() {
 # ---------------------------------------------------------------------------
 rc=0
 result_text=""
+# Envelope fields. Only `budgetcap` currently varies them: it is the shape a
+# real session takes when --max-budget-usd stops it, which is NOT a usage limit
+# and must not be treated as one.
+result_subtype="success"
+result_is_error="false"
+terminal_reason=""
 
 case "$behaviour" in
   work)
@@ -368,6 +374,19 @@ case "$behaviour" in
     write_handoff_valid
     git_commit "mock: noisy work step $n"
     result_text="work step $n committed; the upstream API returned 429 during testing so I added rate limit handling, and the quota resets at midnight"
+    ;;
+  budgetcap)
+    # Real work, committed, valid handoff — and then --max-budget-usd cut the
+    # session off. Observed on relay's first real run: rc=1, is_error true,
+    # subtype error_max_budget_usd, terminal_reason budget_exhausted.
+    mkdir -p src
+    printf 'mock work output for invocation %s\n' "$n" > "src/step${n}.txt"
+    write_handoff_valid
+    git_commit "mock: budgetcap work step $n"
+    result_subtype="error_max_budget_usd"
+    result_is_error="true"
+    terminal_reason="budget_exhausted"
+    rc=1
     ;;
   complete)
     write_complete_md
@@ -431,14 +450,18 @@ esac
 #     the stderr-error paths (usagelimit/crash/badsession/unknown) mimic a
 #     hard CLI-level failure with no result payload.
 # ---------------------------------------------------------------------------
-if [ "$rc" -eq 0 ]; then
+if [ "$rc" -eq 0 ] || [ -n "$terminal_reason" ]; then
   if [ "$output_format" = "json" ]; then
     jq -nc \
       --arg result "$result_text" \
       --arg sid "$sid_for_file" \
+      --arg subtype "$result_subtype" \
+      --argjson is_error "$result_is_error" \
+      --arg terminal "$terminal_reason" \
       --argjson n "$n" \
-      '{type:"result", subtype:"success", is_error:false, result:$result,
-        session_id:$sid, num_turns:$n, total_cost_usd:0.01, permission_denials: []}'
+      '{type:"result", subtype:$subtype, is_error:$is_error, result:$result,
+        session_id:$sid, num_turns:$n, total_cost_usd:0.01, permission_denials: []}
+       + (if $terminal == "" then {} else {terminal_reason:$terminal} end)'
   else
     printf '%s\n' "$result_text"
   fi
