@@ -276,28 +276,36 @@ git_commit() {
   git -c user.name=mock -c user.email=mock@example.com commit -q -m "$1" >>"$GIT_LOG_FILE" 2>&1
 }
 
+# The handoff is STRUCTURED JSON, not prose. relay validates it against a
+# schema and renders it fenced into the next prompt; free-form prose is where
+# prompt injection lives, so the JSON shape is itself the mitigation. Always
+# written .tmp then renamed, which is what relay requires of real sessions —
+# an atomic rename can never be observed half-written.
 write_handoff_valid() {
-  {
-    printf '## DONE\n'
-    printf -- '- invocation %s: mock behaviour %s completed\n\n' "$n" "$behaviour"
-    printf '## NEXT\n'
-    printf -- '- continue with the next mock step\n\n'
-    printf '<!-- relay:handoff-end -->\n'
-  } > "$RELAY_DIR/continue.md.tmp"
-  mv "$RELAY_DIR/continue.md.tmp" "$RELAY_DIR/continue.md"
+  jq -nc \
+    --arg d "invocation $n: mock behaviour $behaviour completed" \
+    --arg nx "continue with mock step $((n + 1))" \
+    --arg f "src/step$n.txt" \
+    '{done:[$d], next:[$nx], files_touched:[$f], open_questions:[]}' \
+    > "$RELAY_DIR/continue.json.tmp"
+  mv "$RELAY_DIR/continue.json.tmp" "$RELAY_DIR/continue.json"
 }
 
 write_handoff_partial() {
-  # Deliberately truncated mid-sentence, no ## NEXT, no end sentinel.
-  printf '## DONE\n- invocation %s: mock behaviour crash was cut off mid-sente' "$n" \
-    > "$RELAY_DIR/continue.md.tmp"
-  mv "$RELAY_DIR/continue.md.tmp" "$RELAY_DIR/continue.md"
+  # Truncated mid-write: invalid JSON, exactly what a kill -9 mid-handoff
+  # leaves behind. relay must fall back to the previous handoff and recover
+  # position from git rather than trusting this.
+  printf '{"done":["invocation %s was cut off mid-sente' "$n" \
+    > "$RELAY_DIR/continue.json.tmp"
+  mv "$RELAY_DIR/continue.json.tmp" "$RELAY_DIR/continue.json"
 }
 
 write_handoff_malformed() {
-  printf 'this is not a structured handoff, just unstructured notes from invocation %s\n' "$n" \
-    > "$RELAY_DIR/continue.md.tmp"
-  mv "$RELAY_DIR/continue.md.tmp" "$RELAY_DIR/continue.md"
+  # Valid JSON, wrong shape: no `next` array. Passes a naive parse, fails the
+  # schema — the case a format check would catch but a syntax check would not.
+  printf '{"notes":"unstructured notes from invocation %s"}\n' "$n" \
+    > "$RELAY_DIR/continue.json.tmp"
+  mv "$RELAY_DIR/continue.json.tmp" "$RELAY_DIR/continue.json"
 }
 
 write_complete_md() {

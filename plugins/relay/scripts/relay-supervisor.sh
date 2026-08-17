@@ -415,21 +415,29 @@ while :; do
   fi
 
   START_TS=$(date +%s)
-  RELAY_SESSION_ID="$SID" \
-  RELAY_DIR="$STATE" \
-  RELAY_CTX_WINDOW="$WINDOW" \
-  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
-  relay_timeout "$SESSION_TIMEOUT" \
-    claude -p "$PROMPT" \
-      --session-id "$SID" \
-      --model "$TIER" \
-      --permission-mode dontAsk \
-      --setting-sources user \
-      --strict-mcp-config \
-      --settings "$SETTINGS" \
-      --output-format json \
-      --max-budget-usd "$BUDGET_PER_SESSION" \
-      < /dev/null > "$SLOG" 2>>"$SLOG.err"
+  # The session MUST run with the project as its working directory. Everything
+  # else in this file reaches the repo through `( cd "$PROJECT" && ... )`
+  # subshells, and forgetting it here meant sessions operated on the
+  # supervisor's own directory instead — silently, since the run still
+  # "succeeded". Subshell so the supervisor's own cwd is unaffected.
+  (
+    cd "$PROJECT" || exit 28
+    RELAY_SESSION_ID="$SID" \
+    RELAY_DIR="$STATE" \
+    RELAY_CTX_WINDOW="$WINDOW" \
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+    relay_timeout "$SESSION_TIMEOUT" \
+      claude -p "$PROMPT" \
+        --session-id "$SID" \
+        --model "$TIER" \
+        --permission-mode dontAsk \
+        --setting-sources user \
+        --strict-mcp-config \
+        --settings "$SETTINGS" \
+        --output-format json \
+        --max-budget-usd "$BUDGET_PER_SESSION" \
+        < /dev/null > "$SLOG" 2>>"$SLOG.err"
+  )
   RC=$?
   DUR=$(( $(date +%s) - START_TS ))
   relay_journal "session.exit" "n=$N rc=$RC dur=${DUR}s"
