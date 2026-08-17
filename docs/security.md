@@ -99,6 +99,39 @@ duration_ms, duration_api_ms, ttft_ms, api_error_status
 `permission_denials` is directly useful: the supervisor can detect a permission-denial
 spin instead of inferring it from a stall.
 
+### 6. `--permission-mode dontAsk` denies by default — a deny-only payload is unusable
+
+Probe `probe0-permission-mode.sh` (costs money; not part of `test/run.sh`):
+
+| Case | Payload | Result |
+|---|---|---|
+| A | `permissions.deny` only | project-local `Write` **refused**, `cat > file` Bash fallback **refused** |
+| B | `deny` + broad `allow` | same `Write` **succeeds** |
+| C | `deny` + `allow: ["Read", …]` | `Read` reaches **outside** the working directory |
+| D | broad `allow` + `Bash(<specific>:*)` deny | the specific deny **still fires** |
+
+`dontAsk` means "never prompt", and with nobody to prompt, anything not
+explicitly allowed is refused rather than proceeded with. Relay originally
+shipped a deny-only payload on the opposite assumption. Its first real session
+therefore could not write a single file: the result envelope recorded a denied
+`Write`, then a denied `cat > file` Bash fallback, then the session exhausted
+its budget having produced nothing.
+
+Case D is the one that makes the fix safe. Adding `Bash` to `allow` does not
+void `Bash(sudo:*)` — deny still wins — so the blast-radius layer survives a
+broad allow list intact.
+
+**Relay's response.** The payload carries an explicit `permissions.allow` list
+covering what a build session needs (`Read`, `Write`, `Edit`, `Glob`, `Grep`,
+`Bash`, `Task`, …) alongside the unchanged deny list. `WebFetch` and `WebSearch`
+are never allowed. Case C is why the allow list is bare tool names rather than
+path-scoped rules: every session must read `RUN.md`, which lives outside the
+project by design.
+
+**The general lesson.** No mock-based test could have caught this, because the
+mock has no permission layer to get wrong. Behaviour that lives in the real CLI
+has to be probed against the real CLI.
+
 ## Standing design rules that follow
 
 1. **Fail closed on settings.** `-p` silently ignores settings files that fail validation,
@@ -117,6 +150,9 @@ spin instead of inferring it from a stall.
    context guard degrades to supervisor-side estimation.
 6. **Pin the CLI version.** Record `claude --version` at `relay doctor` time; a version
    change forces re-running doctor, because the settings schema may have moved.
+7. **The payload must say what is allowed, not only what is forbidden.** Under
+   `dontAsk` an omitted `allow` list is not a permissive default — it is a total
+   refusal (finding 6).
 
 ## What relay does not protect against
 

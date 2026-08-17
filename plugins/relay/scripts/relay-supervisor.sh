@@ -99,6 +99,31 @@ window_for_tier() {
   esac
 }
 
+# A session does not start from zero. Its system prompt, tool definitions and
+# CLAUDE.md are already loaded before the first tool call: 48,070 tokens when
+# this floor was measured. Configure a window at or below that and the context
+# guard reports level 3 (critical, "hand off even if incomplete") on call one,
+# every session, forever — so the run spends money producing handoffs and never
+# any work. That is exactly how relay's first real run failed, with `window_opus`
+# set to 40000 on the theory that a small window would make handoffs fire
+# quickly. It does not make them fire quickly; it makes them fire always.
+#
+# The floor is 100000 because the soft threshold is 60% of the window, and soft
+# is the one that must land ABOVE the baseline with room left to work in.
+RELAY_MIN_WINDOW="${RELAY_MIN_WINDOW:-100000}"
+for _tier in opus sonnet fable; do
+  _w=$(window_for_tier "$_tier")
+  case "$_w" in ''|*[!0-9]*) _w=0 ;; esac
+  if [ "$_w" -lt "$RELAY_MIN_WINDOW" ]; then
+    relay_journal "config.window-too-small" "tier=$_tier window=$_w floor=$RELAY_MIN_WINDOW"
+    printf 'relay: window_%s is %s, below the %s floor.\n' "$_tier" "$_w" "$RELAY_MIN_WINDOW" >&2
+    printf 'relay: a session already holds ~48k tokens of system prompt and CLAUDE.md\n' >&2
+    printf 'relay: before its first tool call, so the guard would fire critical immediately.\n' >&2
+    exit "$EX_PREFLIGHT"
+  fi
+done
+unset _tier _w
+
 # ---------------------------------------------------------------------------
 # State. Written atomically after every transition so a supervisor crash is
 # resumable rather than fatal.

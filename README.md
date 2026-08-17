@@ -132,6 +132,21 @@ size-capped, rendered into the next prompt inside a nonce fence, and explicitly
 subordinated to RUN.md. Free-form prose is where prompt injection lives; a
 handoff that claims a guardrail was relaxed halts the run for a human.
 
+## Two settings that bite
+
+**Context window.** The thresholds are percentages of `window_<tier>`, so that
+number has to be the model's real window. A session already holds tens of
+thousands of tokens — system prompt, tool definitions, your `CLAUDE.md` —
+before its first tool call; 48k when this was measured. Setting a small window
+to "make handoffs fire quickly" makes them fire *immediately and always*, so
+the run produces handoffs and never work. Relay refuses to start below 100k.
+
+**Untracked files.** Relay stages modified tracked files plus untracked files
+that `.gitignore` does not exclude. Anything else writing into the working tree
+while a session runs — another agent's scratch directory, editor droppings —
+gets committed with the work. Gitignore that scratch before pointing relay at
+the repository.
+
 ## When it stops
 
 | Exit | Meaning |

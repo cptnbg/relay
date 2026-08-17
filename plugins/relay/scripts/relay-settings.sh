@@ -61,6 +61,37 @@ relay_settings_default_denyread() {
 EOF
 }
 
+# Under `--permission-mode dontAsk`, anything not explicitly allowed is REFUSED
+# rather than proceeded with — verified, probe0-permission-mode.sh case A. A
+# payload carrying only a deny list therefore produces a session that cannot
+# write a single file: relay's first real run spent an entire session budget
+# and wrote nothing, its result envelope listing a denied Write followed by a
+# denied `cat > file` Bash fallback. No mock-based test could have caught this,
+# because the mock has no permission layer to get wrong.
+#
+# So the allow list is not a convenience — it is what makes a session able to
+# work at all. Breadth here is deliberate and consistent with the threat model:
+# the sandbox is the boundary, and `deny` still takes precedence over `allow`
+# (case D), so the blast-radius layer below is untouched by this list.
+relay_settings_default_allow() {
+  cat <<'EOF'
+Read
+Write
+Edit
+Glob
+Grep
+Bash
+BashOutput
+KillShell
+Task
+Agent
+TodoWrite
+NotebookEdit
+Skill
+SlashCommand
+EOF
+}
+
 # Blast-radius reduction for the agent's own mistakes. NOT a security boundary:
 # an attacker controlling repository content defeats command-pattern matching
 # trivially (absolute paths, other binaries, language runtimes, DNS,
@@ -159,6 +190,7 @@ relay_settings_build() {
     --arg tmp "${TMPDIR:-/tmp}" \
     --argjson domains "$(printf '%s\n' "$_domains" | grep -v '^[[:space:]]*$' | jq -R . | jq -s .)" \
     --argjson denyread "$(relay_settings_default_denyread | jq -R . | jq -s .)" \
+    --argjson allow "$(relay_settings_default_allow | jq -R . | jq -s .)" \
     --argjson deny "$( { relay_settings_default_deny; relay_settings_default_deny_writes; } | jq -R . | jq -s .)" \
     '
     {
@@ -182,8 +214,10 @@ relay_settings_build() {
           denyRead: $denyread
         }
       },
-      # ---- blast-radius reduction (NOT a boundary) ----------------------
-      permissions: { deny: $deny },
+      # ---- what the session may do, and what it may never do ------------
+      # `allow` exists because dontAsk refuses anything unlisted; `deny` is
+      # blast-radius reduction and wins over `allow`. Both verified.
+      permissions: { allow: $allow, deny: $deny },
       # ---- relay context guard, scoped to THIS session only -------------
       # Delivered per-invocation rather than registered globally, so relay
       # ships zero hooks that run in anyone else'"'"'s sessions. Exec form keeps
