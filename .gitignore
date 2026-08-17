@@ -1,0 +1,4 @@
+# scratch / probe output
+*.out
+*.err
+.DS_Store
