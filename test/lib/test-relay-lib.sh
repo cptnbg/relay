@@ -208,6 +208,54 @@ test_lock() {
   fi
   relay_unlock "$d2" >/dev/null 2>&1
 
+  # `ps` unusable: a LIVE lock must survive it. This is the fail-open bug the
+  # phase 5 self-hosting run found — `ps -p <pid>` fails identically when the
+  # owner is gone and when `ps` cannot run at all (it exits 127 inside relay's
+  # own sandbox), and the old code read both as "the owner is dead", deleted a
+  # running supervisor's lock, and let a second one start beside it.
+  #
+  # Simulated by shadowing `ps` with a stub that always fails, which is exactly
+  # what the sandbox does from the caller's point of view.
+  local d4="$grp/lock4" psdir="$grp/nops" oldpath="$PATH"
+  mkdir -p "$psdir"
+  printf '#!/bin/sh\nexit 127\n' > "$psdir/ps"
+  chmod +x "$psdir/ps"
+
+  mkdir "$d4"
+  # Owner: this shell, alive, stamped now — a lock that must not be broken.
+  printf '%s|%s|%s|\n' "$$" "$(date +%s)" "$(uname -n)" > "$d4/owner"
+
+  PATH="$psdir:$PATH"
+  if relay_lock "$d4" 0; then
+    PATH="$oldpath"
+    fail "lock_live_survives_unusable_ps" "broke a live lock when ps was unusable (fail-open)"
+  else
+    PATH="$oldpath"
+    if [ -d "$d4" ] && [ -f "$d4/owner" ]; then
+      ok "lock_live_survives_unusable_ps"
+    else
+      fail "lock_live_survives_unusable_ps" "live lock was destroyed even though acquisition failed"
+    fi
+  fi
+
+  # The other half of the same rule: with `ps` unusable we fall back to age,
+  # so a lock old enough to be stale must STILL be breakable. Otherwise a
+  # crashed owner would lock the project out forever.
+  local d5="$grp/lock5"
+  mkdir "$d5"
+  printf '%s|1|%s|\n' "$$" "$(uname -n)" > "$d5/owner"
+
+  PATH="$psdir:$PATH"
+  if relay_lock "$d5" 0; then
+    PATH="$oldpath"
+    ok "lock_ancient_still_broken_without_ps"
+  else
+    PATH="$oldpath"
+    fail "lock_ancient_still_broken_without_ps" "age fallback did not break a long-dead lock"
+  fi
+  relay_unlock "$d5" >/dev/null 2>&1
+  rm -rf "$d4"
+
   # relay_unlock must never remove a lock owned by a different pid.
   local d3="$grp/lock3"
   mkdir "$d3"

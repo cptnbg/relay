@@ -274,13 +274,39 @@ _relay_lock_try_break() {
 
     if [ "$_rlb_stale" -eq 0 ]; then
       _rlb_here="$(uname -n 2>/dev/null || printf 'unknown-host')"
+      _rlb_verifiable=0
       if [ "$_rlb_host" = "$_rlb_here" ]; then
-        # Same host: pid liveness is authoritative.
+        # Same host: pid liveness is authoritative — but ONLY if `ps` itself
+        # works here. `ps -p <pid>` fails identically when the process is gone
+        # and when `ps` cannot run at all, and reading the second case as the
+        # first makes this lock fail OPEN, which is the one direction a lock
+        # must never fail.
+        #
+        # This is not hypothetical. Inside relay's own sandbox `ps` exits 127,
+        # so every liveness query failed, every live lock looked dead, and a
+        # second supervisor could delete a running one's lock and start beside
+        # it. Found by relay auditing itself during the phase 5 run; the
+        # symptom was two lock tests failing only when the suite ran inside a
+        # session.
+        #
+        # Asking about a pid that certainly exists — our own — separates the
+        # two cases without trusting `ps` to report its own absence.
+        if ps -p "$$" >/dev/null 2>&1; then
+          _rlb_verifiable=1
+        else
+          relay_journal "lock.ps-unusable" "$_rlb_dir"
+        fi
+      fi
+
+      if [ "$_rlb_verifiable" -eq 1 ]; then
         if ! ps -p "$_rlb_pid" >/dev/null 2>&1; then
           _rlb_stale=1
         fi
       else
-        # Different host: pid liveness is meaningless. Only break on age.
+        # Either a different host, where pid liveness is meaningless, or a
+        # host where liveness cannot be established at all. Both mean the same
+        # thing: we do not know, so break only on age. A crashed owner still
+        # gets cleaned up eventually; a live one is never evicted on a guess.
         _rlb_now="$(date +%s 2>/dev/null || printf '0')"
         _rlb_age=$((_rlb_now - _rlb_epoch))
         if [ "$_rlb_age" -lt 0 ]; then
@@ -288,7 +314,7 @@ _relay_lock_try_break() {
         fi
         _rlb_threshold=$((RELAY_LOCK_STALE_SECS * 4))
         if [ "$_rlb_age" -ge "$_rlb_threshold" ]; then
-          relay_warn "breaking cross-host lock $_rlb_dir (host=$_rlb_host age=${_rlb_age}s >= ${_rlb_threshold}s)"
+          relay_warn "breaking unverifiable lock $_rlb_dir (host=$_rlb_host age=${_rlb_age}s >= ${_rlb_threshold}s)"
           _rlb_stale=1
         fi
       fi
@@ -296,7 +322,7 @@ _relay_lock_try_break() {
   fi
 
   if [ "$_rlb_stale" -ne 1 ]; then
-    unset _rlb_dir _rlb_owner _rlb_stale _rlb_line _rlb_pid _rlb_epoch _rlb_host _rlb_here _rlb_now _rlb_age _rlb_threshold
+    unset _rlb_dir _rlb_owner _rlb_stale _rlb_line _rlb_pid _rlb_epoch _rlb_host _rlb_here _rlb_verifiable _rlb_now _rlb_age _rlb_threshold
     return 1
   fi
 
@@ -304,14 +330,14 @@ _relay_lock_try_break() {
   # cannot both destroy the lock concurrently.
   _rlb_breaking="$_rlb_dir.breaking"
   if ! mkdir "$_rlb_breaking" 2>/dev/null; then
-    unset _rlb_dir _rlb_owner _rlb_stale _rlb_line _rlb_pid _rlb_epoch _rlb_host _rlb_breaking
+    unset _rlb_dir _rlb_owner _rlb_stale _rlb_line _rlb_pid _rlb_epoch _rlb_host _rlb_verifiable _rlb_breaking
     return 1
   fi
 
   relay_journal "lock_break" "$_rlb_dir"
   rm -rf "$_rlb_dir" 2>/dev/null
   rmdir "$_rlb_breaking" 2>/dev/null
-  unset _rlb_dir _rlb_owner _rlb_stale _rlb_line _rlb_pid _rlb_epoch _rlb_host _rlb_breaking
+  unset _rlb_dir _rlb_owner _rlb_stale _rlb_line _rlb_pid _rlb_epoch _rlb_host _rlb_verifiable _rlb_breaking
   return 0
 }
 
