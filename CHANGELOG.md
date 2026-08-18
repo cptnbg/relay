@@ -6,6 +6,8 @@ recorded user consent.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-18
+
 ### Added
 - Supervisor chain loop: predicate-driven session chaining that never trusts
   `claude`'s exit code.

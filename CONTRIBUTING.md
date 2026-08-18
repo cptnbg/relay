@@ -1,9 +1,9 @@
 # Contributing
 
-This repository has no remote configured yet — `.git/config` in this checkout
-has no `[remote ...]` section, so `github.com/cptnbg/relay` does not exist as
-a push target here. Everything below is stated as policy for the published
-repository, not something already verified against a live GitHub setting.
+The repository is published at `github.com/cptnbg/relay`. The access rules
+below are enforced by GitHub settings on the default branch, not merely stated
+here — see "in force" under the second-maintainer rule for exactly which
+setting backs which sentence.
 
 ## Access
 
@@ -29,17 +29,20 @@ reviewer could skip under time pressure. The mechanism on GitHub is a
 *Require review from Code Owners* enabled on the default branch — path-scoped
 review is a CODEOWNERS feature, and branch protection alone cannot express it.
 
-**Half in force.** `.github/CODEOWNERS` now exists and claims both paths for
-`@cptnbg` — with the consequence its own header spells out: GitHub does not
-let an author approve their own pull request, so with a single code owner
-those paths cannot be merged by that owner alone, which is precisely the rule
-as written. The other half is still missing: this repository has no remote,
-so the branch-protection setting (*Require review from Code Owners*) that
-gives the file teeth does not exist anywhere yet. Until a maintainer
-publishes the repository and enables it, the file is advisory, and a reader
-should treat the paragraph above as intent plus one artifact rather than
-enforcement. Enabling the setting is a release blocker, tracked with the
-other publish-time owner tasks.
+**In force.** `.github/CODEOWNERS` claims both paths for `@cptnbg`, and the
+default branch requires a pull request with an approving review from a code
+owner (`require_code_owner_reviews`, one approval, stale reviews dismissed);
+force-pushes and branch deletion are disabled. Repository admins are not
+included in the enforcement (`enforce_admins: false`), the usual escape
+hatch for recovering a broken default branch — so the rule binds
+contributors, and an admin bypassing it is a deliberate act, not an
+accident. The consequence CODEOWNERS' own
+header spells out is real and deliberate: GitHub does not let an author approve
+their own pull request, so with a single code owner these two paths cannot be
+merged by that owner alone. Adding a second maintainer is what unblocks them.
+The initial import predates the setting — it was pushed to found the
+repository, before protection existed — and everything after it goes through
+the rule.
 
 ## Running the suites
 

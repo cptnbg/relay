@@ -3,11 +3,12 @@
 ## Reporting
 
 Report vulnerabilities privately via GitHub Security Advisories on this
-repository (Security tab, "Report a vulnerability"). There is currently **no
-private-report email**: `plugins/relay/.claude-plugin/plugin.json` carries no
-address, and this file will not point at one that does not exist. *(TODO,
-owner: publish a security contact address and record it here and in
-plugin.json.)* Please do not open a public issue for anything exploitable.
+repository: Security tab → "Report a vulnerability". Private vulnerability
+reporting is enabled, so that form is a working private channel and is the
+preferred one. There is deliberately **no private-report email**:
+`plugins/relay/.claude-plugin/plugin.json` carries no address, and this file
+will not point at one that does not exist. Please do not open a public issue
+for anything exploitable.
 
 ## Scope
 
