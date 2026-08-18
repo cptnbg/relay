@@ -359,7 +359,7 @@ write_handoff_valid() {
 }
 
 # Structurally perfect, but every entry far over the 280-character cap — the
-# shape a real sonnet session produced on the AEIA run. The marker sits at the
+# shape a real sonnet session produced on a long client run. The marker sits at the
 # FRONT of each string so a test can prove the content was truncated rather
 # than dropped.
 write_handoff_verbose() {

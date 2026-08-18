@@ -1,7 +1,7 @@
 # test/cases/c110_overlong_handoff_normalized.sh — a handoff with the right
 # shape but over-long entries is truncated to the caps and USED, not discarded.
 #
-# Regression from the AEIA run. Session 9 wrote a structurally perfect handoff
+# Regression from a long client run. Session 9 wrote a structurally perfect handoff
 # whose only fault was ten entries over 280 characters (longest 1,583). It was
 # rejected whole: the session's entire position was lost, the stall counter
 # advanced, and the next session ran in recovery — $2.55 for the session plus

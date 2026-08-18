@@ -2,8 +2,8 @@
 # baseline has been measured, a window too small for THAT baseline is refused.
 #
 # The fixed 100k floor is not enough on its own. A session's cost at rest is not
-# a constant: it was 48k on a toy repository and 69k on aeia-rebuild, because
-# the project's CLAUDE.md is loaded before the first tool call. On aeia-rebuild
+# a constant: it was 48k on a toy repository and 69k on a large client repository, because
+# the project's CLAUDE.md is loaded before the first tool call. On a large client repository
 # a 120k window put the 60% soft threshold at 72k, three thousand tokens above
 # the baseline, so sessions reached "start landing" after six tool calls and two
 # consecutive ones committed nothing.

@@ -287,7 +287,7 @@ fi
 # this project's context actually costs at rest, require the soft threshold to
 # sit at least a fifth of the window above it — otherwise the session reaches
 # "start landing" within a handful of tool calls and the run burns money
-# producing handoffs. On aeia-rebuild the baseline is ~69k, so a 120k window
+# producing handoffs. On a large client repository the baseline is ~69k, so a 120k window
 # left 3k of working room and two consecutive sessions committed nothing.
 _prev_base=$(state_get ctx_baseline)
 case "$_prev_base" in
@@ -827,7 +827,7 @@ while :; do
   MODE="$NEXT_MODE"
   # Measured from the LAST review, not from N modulo the interval. The modulo
   # form is stateless, so lowering review_every between runs re-lands a review
-  # on the very next session — observed on the AEIA run, where session 8 audited
+  # on the very next session — observed on a long client run, where session 8 audited
   # and session 9 was scheduled to audit again, against a handoff that said in
   # so many words "do not re-audit, build the remaining steps". An audit that
   # repeats the previous audit costs a session and learns nothing.
@@ -901,7 +901,7 @@ while :; do
   # What this session's context cost before it did anything: the system prompt,
   # the tool definitions and the project's CLAUDE.md are all loaded before the
   # first tool call. It is NOT a constant — 48k on a toy repository, 69k on
-  # aeia-rebuild — so a window that is generous for one project leaves another
+  # a large client repository — so a window that is generous for one project leaves another
   # with no working room at all. Recording it turns "every session hands off
   # immediately" from a mystery into a number, and lets the next run refuse a
   # window that cannot work. Lowest reading this session, from its own lines.

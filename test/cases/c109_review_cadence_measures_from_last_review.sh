@@ -2,7 +2,7 @@
 # is measured from the last review, not from the session number modulo the
 # interval.
 #
-# Regression from the AEIA run. The schedule was `N % review_every`, which is
+# Regression from a long client run. The schedule was `N % review_every`, which is
 # stateless: session 8 ran a review under review_every=4, the interval was then
 # lowered to 3 between runs, and session 9 (9 % 3 == 0) was scheduled to review
 # again — against a handoff whose first line said not to re-audit. A second
