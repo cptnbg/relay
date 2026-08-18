@@ -1,0 +1,17 @@
+# CODEOWNERS — the enforcement half of CONTRIBUTING.md's second-maintainer rule.
+#
+# These two directories are the files relay's own supervisor executes, sometimes
+# while a relay session is the one proposing the change. A missed review here is
+# a corrupted overnight run, not a filed bug.
+#
+# This file only has teeth when the repository ALSO enables, on the default
+# branch: "Require a pull request before merging" + "Require review from Code
+# Owners". Without that setting this file is advisory.
+#
+# Consequence to accept deliberately: GitHub does not let an author approve
+# their own pull request. With a single code owner, a change to these paths
+# cannot be merged by that owner alone — which is precisely the rule
+# CONTRIBUTING.md states. Adding a second maintainer here is what unblocks it.
+
+/plugins/relay/scripts/    @cptnbg
+/plugins/relay/hooks/      @cptnbg

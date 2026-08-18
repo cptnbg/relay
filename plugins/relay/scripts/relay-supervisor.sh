@@ -667,9 +667,19 @@ verify_complete() {
   _start=$(state_get commits_at_start)
   case "$_now"   in ''|*[!0-9]*) _now=0 ;; esac
   case "$_start" in ''|*[!0-9]*) _start=0 ;; esac
-  if [ "$_now" -le "$_start" ]; then
-    relay_journal "complete.rejected" "no commits were made (start=$_start now=$_now)"; return 1
-  fi
+  # The commit count is a PROXY for "did anything happen", and it is only a
+  # veto when there is nothing better to appeal to. If an acceptance command is
+  # configured, that command is the run's own definition of done and is far
+  # stronger evidence than a commit count — so it is run first (below) and, if
+  # it passes, a run that added no commits is still complete.
+  #
+  # Found by rehearsing an install end to end: run 1 built the work correctly
+  # but could not seal COMPLETE (a foreign tool kept the tree dirty); run 2
+  # resumed with the work already done and was rejected three times for
+  # "no commits were made", burning three sessions to reach EX_REJECTED while
+  # the acceptance command passed the entire time. Any `relay resume` after the
+  # work is finished hit that wall. Conflating "this run made no commits" with
+  # "no work was done" is the bug.
   if [ -n "$ACCEPT_CMD_JSON" ] && [ "$ACCEPT_CMD_JSON" != "null" ]; then
     # Approval integrity, verified immediately before the command runs. The
     # state split (A1) already made exec.json supervisor-only — it is not in
@@ -732,6 +742,18 @@ verify_complete() {
       relay_journal "complete.rejected" "acceptance command failed"
       return 1
     fi
+    # Acceptance passed: that is the run's own definition of done. A run that
+    # added no commits (a resume after the work was already finished) is
+    # complete, and the fact is journaled rather than silently accepted.
+    if [ "$_now" -le "$_start" ]; then
+      relay_journal "complete.no-new-commits" "accepted on passing acceptance (start=$_start now=$_now)"
+    fi
+    return 0
+  fi
+  # No acceptance command configured, so the commit count is the only evidence
+  # there is that this run did anything at all. Here it stays a hard veto.
+  if [ "$_now" -le "$_start" ]; then
+    relay_journal "complete.rejected" "no commits were made (start=$_start now=$_now)"; return 1
   fi
   return 0
 }
