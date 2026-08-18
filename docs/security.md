@@ -3,15 +3,23 @@
 Every claim here was verified empirically against Claude Code **2.1.233** on macOS 26
 (Darwin 25.5.0), bash 3.2.57. Probes live in `test/lint/probe0-*.sh` and are re-runnable.
 
-That pinning is meant literally, in both directions. Every finding below is only as
-current as its probe run, the probes cost real money, and **they have not been re-run
-against any CLI newer than 2.1.233** — including 2.1.234, a version this repository
-already references elsewhere (the marketplace schema notes in `RELEASING.md` were read
-from the 2.1.234 binary). Until someone re-runs the probes (`CONTRIBUTING.md`, "The paid
-probes"), what a newer CLI changed is unverified, not assumed unchanged. Relay's runtime
-covers only part of that gap on its own: the sandbox-enforcement probe's cache key
-includes `claude --version`, so a version change forces a fresh runtime proof of the
-sandbox — but of the sandbox alone, not of the other findings below.
+That pinning is meant literally, in both directions: every finding below is only as
+current as its probe run, and the probes cost real money to run.
+
+**Re-verified on 2.1.234 (2026-08-18): findings 1 and 3, unchanged.**
+`probe0-settings-trust.sh` still reports the repo-supplied `SessionStart` hook firing
+with no flags and suppressed under `--setting-sources user`; `probe0-sandbox.sh` still
+reports its control case leaking (so the probe can still observe a leak), the `denyRead`
+canary blocked, and egress to `example.com` refused with a CONNECT 403. The two findings
+relay's whole threat model rests on therefore hold on the newer CLI.
+
+**Not re-run on 2.1.234: findings 2, 5 and 6** (`probe0-settings-hooks.sh`,
+`probe0-integration.sh`, `probe0-permission-mode.sh`). What a newer CLI changed there is
+unverified, not assumed unchanged. Relay's runtime covers part of that gap on its own —
+the sandbox-enforcement probe's cache key includes `claude --version`, so a version
+change forces a fresh runtime proof of the sandbox before any run starts, and that proof
+now asserts blocked egress as well as the unreadable canary. It proves the sandbox, not
+the hook-delivery or permission-mode findings.
 
 ## Phase 0 findings
 
