@@ -144,7 +144,12 @@ run_one() {
     RELAY_BACKOFF_BASE=1
     RELAY_SESSION_TIMEOUT=5
     RELAY_MIN_SESSION_SECS=0
-    export RELAY_POLL_INTERVAL RELAY_KILL_GRACE RELAY_BACKOFF_BASE RELAY_SESSION_TIMEOUT RELAY_MIN_SESSION_SECS
+    # Silence relay_notify for every case: without this, ~15 supervisor exit
+    # paths fire REAL desktop notifications (osascript on macOS) and pay a
+    # relay_timeout fork + mktemp per call. A case that tests notification
+    # behaviour must override this explicitly.
+    RELAY_NOTIFY=0
+    export RELAY_POLL_INTERVAL RELAY_KILL_GRACE RELAY_BACKOFF_BASE RELAY_SESSION_TIMEOUT RELAY_MIN_SESSION_SECS RELAY_NOTIFY
 
     export ROOT
 

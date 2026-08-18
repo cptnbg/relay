@@ -13,17 +13,17 @@ every other script sources:
 - **bash 3.2** — the version gate at `relay-lib.sh:22-25` refuses to run
   under `BASH_VERSINFO[0] < 3`; the comment above it names the actual floor,
   bash 3.2.57 (macOS system bash), not bash 3 generically.
-  `relay-doctor.sh:85-89` checks the same thing at preflight and calls it out
+  `relay-doctor.sh:88-92` checks the same thing at preflight and calls it out
   by version string in its failure message.
-- **git** — checked by `relay-doctor.sh:90` (`check_tool git 2.20
+- **git** — checked by `relay-doctor.sh:93` (`check_tool git 2.20
   'git --version'`), so 2.20 is the minimum doctor enforces. `relay-lib.sh:8`
   lists `git` among the allowed externals; `relay_hash()`
-  (`relay-lib.sh:408-456`) uses `git hash-object` as its first-choice content
+  (`relay-lib.sh:434-482`) uses `git hash-object` as its first-choice content
   hash.
-- **jq** — checked by `relay-doctor.sh:91` (`check_tool jq 1.6 'jq --version'`).
-  Used throughout for config (`cfg()`, `relay-supervisor.sh:54-57`) and for
-  the acceptance-command argv validation (`relay-supervisor.sh:76-85`).
-- **claude** (Claude Code CLI) — checked by `relay-doctor.sh:95-106`, which
+- **jq** — checked by `relay-doctor.sh:94` (`check_tool jq 1.6 'jq --version'`).
+  Used throughout for config (`cfg()`, `relay-supervisor.sh:79-82`) and for
+  the acceptance-command argv validation (`relay-supervisor.sh:141-149`).
+- **claude** (Claude Code CLI) — checked by `relay-doctor.sh:96-109`, which
   gives the version probe its own 10-second timeout rather than a minimum
   version string; a broken install or a hung auth refresh must not stall an
   unattended run at the starting line. `README.md:68-69` states a minimum of
@@ -72,11 +72,11 @@ The excluded set and the specific fact behind each:
   so the whole tree can be signalled via `kill -TERM "-$pgid"`
   (`relay-lib.sh:134-136`).
 - **`shasum`** — not itself excluded (it is a real rung in `relay_hash()`,
-  `relay-lib.sh:431-441`); what is excluded is treating `sha256sum` as
+  `relay-lib.sh:457-467`); what is excluded is treating `sha256sum` as
   available, since it is "not on macOS; use relay_hash" (`no-deps.sh:30`).
   `relay_hash()`'s actual ladder is git hash-object, then `shasum -a 256`,
   then a `cksum`-based weak fallback prefixed `cksum:` so a caller can tell
-  it apart from a real hash (`relay-lib.sh:403-456`).
+  it apart from a real hash (`relay-lib.sh:434-482`).
 - **`bc`** — not scanned by `no-deps.sh` and not named in the allowed-
   externals comment. All arithmetic in these scripts uses POSIX shell
   `$(( ))`, which is sufficient for the integer math relay needs (percentages,
@@ -84,16 +84,16 @@ The excluded set and the specific fact behind each:
   entirely.
 - **`realpath`** — not on stock macOS (`no-deps.sh:28`). `relay-doctor.sh`
   resolves at most one level of symlink by hand instead
-  (`relay-doctor.sh:64-69`: `readlink` plus a `case` on whether the target
+  (`relay-doctor.sh:67-72`: `readlink` plus a `case` on whether the target
   is absolute).
 - **`readlink -f`** — same absence on stock macOS, banned separately
   (`no-deps.sh:29`) because plain `readlink` (no `-f`) is fine and is what
-  `relay-doctor.sh:67` actually calls.
+  `relay-doctor.sh:70` actually calls.
 - **`stat`** — its flags differ between macOS (BSD) and Linux (GNU)
-  (`no-deps.sh:27`). `relay-doctor.sh:248-250` reads a credential file's
+  (`no-deps.sh:27`). `relay-doctor.sh:314-317` reads a credential file's
   permission bits with `ls -l | cut -c1-10` instead, calling `ls` "portable
   enough for a permission check." `relay_prune_sessions()`'s header makes
-  the same point about `find -mtime` versus `stat` (`relay-lib.sh:518-519`).
+  the same point about `find -mtime` versus `stat` (`relay-lib.sh:544-546`).
 - **`grep -P`** — unavailable on macOS's BSD grep (`no-deps.sh:33`). Every
   pattern in these scripts is plain ERE (`grep -E`), which macOS grep does
   support.
@@ -101,14 +101,14 @@ The excluded set and the specific fact behind each:
   that is not just spelling: BSD requires an argument to `-i` (even if
   empty) where GNU treats a bare `-i` as in-place-no-backup
   (`no-deps.sh:34`). Relay never edits a file in place with `sed`; writes go
-  through `relay_atomic_write()` (`relay-lib.sh:463-503`) instead — a
+  through `relay_atomic_write()` (`relay-lib.sh:489-529`) instead — a
   same-directory temp file plus `mv`, which is also how atomic replacement
   is achieved without relying on any editor's in-place semantics.
 - **`date -d`** — GNU-only; BSD `date` parses input dates with `-f`
   instead, a different flag with different format syntax (`no-deps.sh:35`,
   and `no-deps.sh:36` separately bans GNU-only `date +%s%N` nanosecond
   precision). Relay only ever needs `date +%s` (epoch seconds, e.g.
-  `relay-lib.sh:46,228,284`), which both `date` implementations support
+  `relay-lib.sh:46,228,310`), which both `date` implementations support
   identically, so the GNU-only forms are simply never needed rather than
   worked around.
 
@@ -122,7 +122,7 @@ macOS ships bash 3.2.57 and relay treats that as the floor
 - **`mapfile` / `readarray`** — bash 4+ (`no-bash4.sh:29-30`).
 - **`${v^^}` / `${v,,}`** (case-folding expansion) — bash 4+
   (`no-bash4.sh:31-32`). Case folding that is needed (e.g. `relay_uuid()`
-  lower-casing a UUID at `relay-lib.sh:352,363`) goes through `tr
+  lower-casing a UUID at `relay-lib.sh:378,389`) goes through `tr
   '[:upper:]' '[:lower:]'` instead, which is POSIX `tr`, not a bash
   built-in.
 - Also banned for the same bash-4+ reason: `wait -n` (4.3+), `coproc`,
@@ -134,7 +134,7 @@ macOS ships bash 3.2.57 and relay treats that as the floor
 are bash-2-era syntax, not a bash-4-ism — but this codebase does not use
 them anywhere in `plugins/`, and the one place an argv list has to be built
 dynamically shows why: `verify_complete()`'s acceptance-command runner
-(`relay-supervisor.sh:511-520`) builds its argument list with `set --`
+(`relay-supervisor.sh:721-731`) builds its argument list with `set --`
 against the positional parameters, not a bash array:
 
 ```
@@ -147,7 +147,7 @@ done
 ```
 
 Every script in the codebase runs under `set -u` (`relay-supervisor.sh:21`,
-`relay-lib.sh:14`, `relay-git.sh:20`, `relay-doctor.sh:12`,
+`relay-lib.sh:14`, `relay-git.sh:20`, `relay-doctor.sh:15`,
 `relay-settings.sh:19`). Under bash 3.2, expanding `"${arr[@]}"` on an array
 that is empty (as opposed to unset) still trips `set -u`'s "unbound
 variable" — that quirk was not fixed until bash 4.4. Positional parameters
@@ -243,7 +243,7 @@ dependency it describes is real but conditional: relay works without `ps`, it
 just recovers a crashed run more slowly.
 
 `relay_lock()`'s staleness check, `_relay_lock_try_break()`
-(`relay-lib.sh:255-340`), decides whether a same-host lock's owner process is
+(`relay-lib.sh:255-342`), decides whether a same-host lock's owner process is
 still alive by shelling out to `ps`. `ps` is not in the hard-dependency list
 above, and `test/lint/no-deps.sh` does not scan for it — its pattern list
 (`no-deps.sh:23-36`) has no `ps` entry, so a call to `ps` is not a lint
@@ -268,11 +268,11 @@ else
 fi
 ```
 
-(`relay-lib.sh:294-299`). When liveness is verifiable, pid liveness decides.
+(`relay-lib.sh:294-298`). When liveness is verifiable, pid liveness decides.
 When it is not, relay falls back to the same age rule it uses for a lock owned
 by a different host: break only once the lock is older than
 `RELAY_LOCK_STALE_SECS * 4`, 3600 seconds by default
-(`relay-lib.sh:301-320`). A live owner is never evicted on a guess, and a
+(`relay-lib.sh:305-320`). A live owner is never evicted on a guess, and a
 crashed one still gets cleaned up — an hour later instead of immediately.
 
 This is the direction a lock has to fail. Until it was fixed, the check read
@@ -289,3 +289,19 @@ cover both halves directly, with `ps` stubbed out.
 So `ps` remains an undeclared soft dependency, and that is now a deliberate,
 documented position rather than an unnoticed one: relay prefers it, works
 without it, and says in the journal which mode it is in.
+
+## The probe's undeclared soft dependency: `curl`
+
+Same category, different function. The sandbox-enforcement probe asks its
+throwaway session to attempt an egress connection with `curl`
+(`relay-settings.sh:441-444`), but `curl` appears nowhere in the
+hard-dependency list and `no-deps.sh` does not scan for it either. On a box
+without it, the egress attempt produces no parseable `code=`/`rc=` result,
+`relay_settings_egress_verdict()` reports `inconclusive`
+(`relay-settings.sh:344-352`), and the run **proceeds** — journaled as
+`probe.egress inconclusive` — on the strength of the denyRead canary, which
+needs nothing but the filesystem and has already proven the sandbox is on.
+Only a `reachable` verdict refuses the run. So `curl` buys a stronger
+preflight proof where present and costs nothing where absent; the direction
+of that trade is deliberate, and `docs/security.md`'s standing rule 1 states
+it as policy.

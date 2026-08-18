@@ -40,22 +40,32 @@ OS-level sandbox on every session: filesystem reads are confined and network
 egress is restricted to an allowlist, enforced below the shell, so it covers
 code relay never sees. **If the sandbox cannot start, relay refuses to run.**
 Relay also proves enforcement before each run rather than assuming it, because
-`claude -p` silently ignores a settings payload that fails validation.
+`claude -p` silently ignores a settings payload that fails validation. That
+proof has one honest asymmetry: the read-denial canary must pass outright,
+while the egress check can come back *inconclusive* on a machine without
+`curl` — that case is journaled as `probe.egress inconclusive` and the run
+proceeds on the canary's proof alone, because "we could not tell" is not the
+same claim as "blocked".
 
 **Relay never pushes.** It commits — with an explicit filtered pathspec, never
-`git add -A`, refusing credential-shaped filenames and scanning the staged diff
-for secrets. On a hit it halts instead of committing. This is best-effort:
+`git add -A`, refusing credential-shaped filenames and scanning the full
+content of every staged file for secrets (content, not diff, so an in-tree
+`.gitattributes` cannot hide a file from the scan). On a hit it halts instead
+of committing. This is best-effort:
 **review `git log -p` before you push.**
 
-**Logs contain what the agent read.** They are kept outside your repository at
-`~/.local/state/relay/`, mode 0600, and pruned. Redaction is pattern-based and
-will miss things. Separately, Claude Code writes its own complete, unredacted
-transcript to `~/.claude/projects/` — relay does not control that file and
-cannot redact it.
+**Logs contain what the agent read, unredacted.** They are kept outside your
+repository at `~/.local/state/relay/`, mode 0600, and pruned on a retention
+schedule you control (`keep_sessions`/`keep_days`) — but relay does not redact
+them. Separately, Claude Code writes its own complete, unredacted transcript
+to `~/.claude/projects/` — relay does not control that file and cannot redact
+it.
 
 **A repository can never make relay run a command.** Commands live in your user
-configuration outside any repo and require explicit approval, re-confirmed
-whenever they change.
+configuration outside any repo and require explicit approval. The approval
+records a hash of the exact command (`exec_hash`); the supervisor verifies it
+at preflight and again immediately before executing the command, and halts
+BLOCKED on any mismatch — so a command changed after approval never runs.
 
 Only point relay at a repository you would `npm install && npm test` in without
 thinking about it. Relay's session sandbox does not extend to relay's own
@@ -106,6 +116,7 @@ something you do deliberately, after reading the diff.
 ```
 /relay-doctor                     # can relay safely run here?
 /relay-init  path/to/PLAN.md      # interview, consent, configuration
+/relay-approve                    # review + approve the acceptance command
 /relay-run                        # launch; this session then ends
 /relay-status                     # what is it doing?
 /relay-note  "prefer sqlite here" # steer it without stopping it
@@ -130,7 +141,8 @@ supervisor
        │   75% used → "hand off now"
        │   88% used → "write the handoff even if incomplete"
        │   opus orchestrator delegates to parallel sonnet subagents
-       └─ verify: sealed COMPLETE + acceptance + clean tree + commits grew
+       └─ verify: sealed COMPLETE + clean tree + approved acceptance cmd
+                  passes (with no acceptance cmd: commit count must grow)
                   BLOCKED → halt   STOP → halt   usage limit → wait, resume
                   invalid handoff / compaction → next session runs in recovery
                   no progress → escalate to fable, then trip the breaker
@@ -178,12 +190,31 @@ while a session runs — another agent's scratch directory, editor droppings —
 gets committed with the work. Gitignore that scratch before pointing relay at
 the repository.
 
+## Other knobs worth knowing
+
+- **`allow_domains`** (`config.json`) — extra sandbox egress, as a
+  comma-separated hostname list. The default allowlist is `api.anthropic.com`
+  and nothing else, so `npm ci` fails inside the sandbox until the registry is
+  listed here. Validated as hostnames at preflight; a malformed value refuses
+  to start rather than silently never matching.
+- **`keep_sessions` / `keep_days`** (`config.json`, defaults 5 and 7) — how
+  many session logs survive pruning, and for how many days. Session logs hold
+  whatever the agent read; this is the retention control.
+- **`RELAY_NOTIFY_CMD`** (environment variable) — how a run reaches your
+  phone. If set, relay invokes it as `"$RELAY_NOTIFY_CMD" <title> <message>`
+  — argv only, never a shell string, sanitized arguments, 5-second timeout —
+  on every notable event: complete, blocked, budget or session cap, usage
+  limit, escalation. Point it at any two-argument forwarder (ntfy, Pushover,
+  Telegram bot). Without it, relay falls back to `terminal-notifier`, then
+  `osascript`, then `notify-send`, whichever exists; `RELAY_NOTIFY=0`
+  disables notifications entirely.
+
 ## When it stops
 
 | Exit | Meaning |
 |---|---|
 | 0 | complete, and verified |
-| 20 | blocked — a human is needed; see `BLOCKED.md` |
+| 20 | blocked — a human is needed; see `work/BLOCKED.md` in the state dir |
 | 21 / 26 | no progress across several sessions / sessions exiting immediately |
 | 22 / 23 / 24 | repeated timeouts / session cap / you asked it to stop |
 | 25 | another supervisor holds this project |

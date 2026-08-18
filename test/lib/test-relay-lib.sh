@@ -429,7 +429,10 @@ RECORDER_EOF
   RELAY_TEST_RECORDER_OUT="$grp"
   export RELAY_TEST_RECORDER_OUT
 
-  RELAY_NOTIFY_CMD="$recorder" relay_notify "Hi" 'bad "; rm -rf / ` x'
+  # RELAY_NOTIFY=1 is pinned explicitly: the harness (and CI) export
+  # RELAY_NOTIFY=0 to keep the rest of the suite silent, and that ambient
+  # value would short-circuit relay_notify before it ever ran the recorder.
+  RELAY_NOTIFY=1 RELAY_NOTIFY_CMD="$recorder" relay_notify "Hi" 'bad "; rm -rf / ` x'
   assert_status "notify_custom_cmd_returns_0" 0 "$?"
 
   local argc
@@ -495,14 +498,20 @@ test_prune_sessions() {
   grp="$(mktemp -d "${TMPDIR:-/tmp}/relaytest.prune.XXXXXX")"
   mkdir -p "$grp/sessions" "$grp/handoffs"
 
-  # Eight sessions, oldest first so `ls -t` order is unambiguous. Touch with a
-  # one-second gap rather than trusting creation order: same-second mtimes make
-  # the newest-five assertion a coin flip.
+  # Eight sessions, oldest first so `ls -t` order is unambiguous. Explicit
+  # one-second-apart mtimes via `touch -t` rather than sleeping between
+  # creates: same-second mtimes would make the newest-five assertion a coin
+  # flip, and eight real 1s sleeps dominated this suite's wall clock. The
+  # stamps use TODAY at 00:00 so the `-mtime +7` age rung cannot fire on them
+  # (a fixed historic date would age-delete everything before the keep-newest
+  # rung was ever exercised).
+  _day="$(date +%Y%m%d)"
   i=1
   while [ "$i" -le 8 ]; do
     printf 'session %s\n' "$i" > "$grp/sessions/00$i-sid.log"
     printf '' > "$grp/sessions/00$i-sid.log.err"
-    sleep 1
+    touch -t "${_day}0000.0$i" "$grp/sessions/00$i-sid.log"
+    touch -t "${_day}0000.0$i" "$grp/sessions/00$i-sid.log.err"
     i=$((i + 1))
   done
 

@@ -1012,7 +1012,7 @@ while :; do
       printf '## Lines that triggered this\n\n'
       handoff_guardrail_drift | sed 's/^/    /'
       printf '\n## What to do\n\nReview the handoff and the session log at:\n    %s\n' "$SLOG"
-      printf '\nThen: relay resume\n\n<!-- relay:sealed -->\n'
+      printf '\nThen: /relay-resume\n\n<!-- relay:sealed -->\n'
     } > "$WORK/BLOCKED.md" 2>/dev/null
     relay_notify "relay: blocked" "handoff asserted a relaxed guardrail"
     state_set status "blocked" reason "guardrail-drift"

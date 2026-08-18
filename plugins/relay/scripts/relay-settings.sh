@@ -181,7 +181,8 @@ EOF
 # Emits the complete inline --settings JSON on stdout.
 #
 # The second argument is the session-WRITABLE work dir ($STATE/work), NOT the
-# whole state dir. Only it and the project go into filesystem.allowWrite, so a
+# whole state dir. allowWrite is exactly three entries — the project, that work
+# dir, and $TMPDIR (which the session's own build tools need) — so a
 # prompt-injected session cannot write state.json/journal.log/exec.json/locks/
 # — those live at the supervisor-only state root, one level up, out of reach.
 # ---------------------------------------------------------------------------

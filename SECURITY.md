@@ -3,8 +3,11 @@
 ## Reporting
 
 Report vulnerabilities privately via GitHub Security Advisories on this
-repository, or by email to the address in `.claude-plugin/plugin.json`. Please
-do not open a public issue for anything exploitable.
+repository (Security tab, "Report a vulnerability"). There is currently **no
+private-report email**: `plugins/relay/.claude-plugin/plugin.json` carries no
+address, and this file will not point at one that does not exist. *(TODO,
+owner: publish a security contact address and record it here and in
+plugin.json.)* Please do not open a public issue for anything exploitable.
 
 ## Scope
 
@@ -33,7 +36,13 @@ Out of scope, because they are documented properties rather than defects:
 ## Design commitments
 
 These are load-bearing. A change that relaxes one is a MAJOR version bump and
-invalidates recorded consent:
+invalidates recorded consent. The consent half of that sentence is a
+mechanism, not an assertion: consent is recorded as the git blob hash of the
+exact notice text the user accepted (`consent.notice_hash`), and
+`/relay-doctor` recomputes that hash from the installed SKILL.md and refuses
+to run when consent is absent or the notice no longer matches
+(`plugins/relay/scripts/relay-doctor.sh:263-296`). Changing the terms
+mechanically forces re-consent. The commitments:
 
 1. Relay never passes `--dangerously-skip-permissions`.
 2. Relay never pushes to a git remote.

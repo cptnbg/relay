@@ -11,11 +11,15 @@ in it.
 ## 1. Decide the version
 
 SemVer, with the one addition recorded in `CHANGELOG.md:3-5` and
-`SECURITY.md:35-36`: a change that relaxes any commitment in `SECURITY.md` is a
-MAJOR bump, and it invalidates recorded user consent. That is not a formality.
-A user who approved relay's behaviour once approved the behaviour those
-commitments describe; weakening one means the approval no longer covers what
-they will be running.
+`SECURITY.md:38-39`: a change that relaxes any commitment in `SECURITY.md` is a
+MAJOR bump, and it invalidates recorded user consent. That is not a formality,
+and it is no longer only a policy: consent is recorded as a hash of the exact
+notice text (`consent.notice_hash`), and doctor refuses to run when the
+installed notice no longer matches it — so shipping changed terms makes every
+existing user's next run stop at preflight until they re-run `/relay-init` and
+re-accept. Say that in the release notes when it applies. A user who approved
+relay's behaviour once approved the behaviour those commitments describe;
+weakening one means the approval no longer covers what they will be running.
 
 ## 2. Bump both manifests in lockstep
 

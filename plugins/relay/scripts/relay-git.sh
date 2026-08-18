@@ -323,7 +323,7 @@ relay_git_commit() {
         printf '1. Inspect the files above and remove the credential.\n'
         printf '2. If it is a false positive, re-run with the path added to\n'
         printf '   the run configuration exclusions.\n'
-        printf '3. Then: relay resume\n\n'
+        printf '3. Then: /relay-resume\n\n'
         printf 'Nothing was committed. The working tree is untouched.\n'
         printf '\n<!-- relay:sealed -->\n'
       } > "$_state/BLOCKED.md" 2>/dev/null

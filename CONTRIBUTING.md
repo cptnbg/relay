@@ -29,11 +29,17 @@ reviewer could skip under time pressure. The mechanism on GitHub is a
 *Require review from Code Owners* enabled on the default branch — path-scoped
 review is a CODEOWNERS feature, and branch protection alone cannot express it.
 
-**Not yet in force.** At the time of writing this repository has no remote, so
-neither file nor setting exists. Until a maintainer creates them, the paragraph
-above describes intent rather than enforcement, and a reader should treat it
-that way. Setting it up is a release blocker, tracked with the other
-publish-time owner tasks.
+**Half in force.** `.github/CODEOWNERS` now exists and claims both paths for
+`@cptnbg` — with the consequence its own header spells out: GitHub does not
+let an author approve their own pull request, so with a single code owner
+those paths cannot be merged by that owner alone, which is precisely the rule
+as written. The other half is still missing: this repository has no remote,
+so the branch-protection setting (*Require review from Code Owners*) that
+gives the file teeth does not exist anywhere yet. Until a maintainer
+publishes the repository and enables it, the file is advisory, and a reader
+should treat the paragraph above as intent plus one artifact rather than
+enforcement. Enabling the setting is a release blocker, tracked with the
+other publish-time owner tasks.
 
 ## Running the suites
 
@@ -68,7 +74,7 @@ broke on the runner.
 
 If a suite fails in a way that looks unrelated to what you changed and
 you're in a sandboxed or containerized environment, read
-`docs/portability.md`'s section "The lock's undeclared exception" before
+`docs/portability.md`'s section "The lock's undeclared dependency: `ps`" before
 assuming your change is at fault — it documents a real, environment-dependent
 gap in the lock's staleness check that predates any change you're likely
 making.
@@ -155,7 +161,7 @@ establishes, and the caps recorded in the source:
   working directory (case C), and a specific `deny` rule still wins over a
   broad `allow` (case D). This is the probe that found relay's first shipped
   settings payload could not write a single file
-  (`docs/security.md:114-118`).
+  (`docs/security.md:127-131`).
 
 No total dollar cost for a full run of all five is recorded anywhere in this
 repository. The figures above are per-invocation caps taken directly from
@@ -168,7 +174,7 @@ one whose surface you believe you touched. `docs/security.md` states plainly
 that every finding in it "was verified empirically against Claude Code
 2.1.233" (`docs/security.md:3-4`), and its own standing design rules record
 that a version change "forces re-running doctor, because the settings
-schema may have moved" (`docs/security.md:151-152`) — the same reasoning
+schema may have moved" (`docs/security.md:184-185`) — the same reasoning
 applies to the probes that established those settings behave the way relay
 assumes. A claim about CLI behaviour — anything of the shape "Claude Code
 does X when given flag Y" — is not accepted into this repository, in
@@ -181,7 +187,9 @@ default-deny behaviour the first time (`docs/security.md`, finding 6).
 
 `SECURITY.md` lists six load-bearing commitments and says directly: "These
 are load-bearing. A change that relaxes one is a MAJOR version bump and
-invalidates recorded consent" (`SECURITY.md:35-36`). `CHANGELOG.md` repeats
+invalidates recorded consent" (`SECURITY.md:38-39`) — and, since the consent
+gate landed, that invalidation is enforced by `/relay-doctor`'s
+`consent.notice_hash` check rather than merely asserted. `CHANGELOG.md` repeats
 the same rule as part of its own versioning policy: Keep-a-Changelog format,
 SemVer, "with one addition: a change that relaxes any commitment in
 `SECURITY.md` is a MAJOR bump and invalidates recorded user consent"

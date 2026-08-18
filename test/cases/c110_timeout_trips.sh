@@ -32,7 +32,13 @@ ELAPSED=$((T1 - T0))
 JOURNAL="$STATE/journal.log"
 
 assert_rc 22 "$RC" "c110_rc"
-assert_between "$ELAPSED" "0" "19" "c110_elapsed_near_timeout_not_full_hang"
+# The mock hangs 30s; the timeout is 3s with a 2s kill grace. The session's
+# own journaled duration is the machine-speed-independent signal: it must sit
+# right at the deadline (3-8s), never at the mock's full 30s hang. The
+# whole-case elapsed bound then only has to exclude the hang, not be exact.
+DUR=$(sed -n 's/.*session\.exit	n=1 rc=[0-9]* dur=\([0-9]*\)s.*/\1/p' "$JOURNAL" | head -1)
+assert_between "$DUR" "2" "8" "c110_session_dur_pinned_to_deadline"
+assert_between "$ELAPSED" "2" "15" "c110_elapsed_near_timeout_not_full_hang"
 assert_grep "$JOURNAL" 'session\.timeout' "c110_session_timeout_journaled"
 
 exit 0

@@ -34,6 +34,25 @@ assert_rc 0 "$RC" "c100_rc"
 BACKOFFCNT=$(grep -Fc -- "$(printf '\tusage_limit.backoff\t')" "$JOURNAL")
 assert_eq "2" "$BACKOFFCNT" "c100_two_backoffs"
 
+# RELAY_BACKOFF_BASE=1 (set by the runner) must actually compress the waits:
+# retry 1 waits base*1=1s, retry 2 waits base*2=2s. A regression back to a
+# fixed 5s sleep step would journal the same wait= values but sleep ~5s per
+# retry, so assert BOTH the journaled schedule and the observed gap between
+# each backoff line and the session.start that follows it.
+assert_grep "$JOURNAL" 'usage_limit\.backoff	wait=1s retry=1' "c100_first_wait_is_base_x1"
+assert_grep "$JOURNAL" 'usage_limit\.backoff	wait=2s retry=2' "c100_second_wait_is_base_x2"
+
+GAPS=$(awk -F'\t' '
+  $2 == "usage_limit.backoff" { pending = $1; next }
+  pending != "" && $2 == "session.start" { print $1 - pending; pending = "" }
+' "$JOURNAL")
+GAPCNT=0
+for g in $GAPS; do
+  GAPCNT=$((GAPCNT + 1))
+  assert_between "$g" "0" "4" "c100_backoff_gap_${GAPCNT}_is_seconds_not_fixed_5s_steps"
+done
+assert_eq "2" "$GAPCNT" "c100_two_measured_backoff_gaps"
+
 # 4 real mock invocations happened...
 ACTIONSCNT=$(wc -l < "$RELAY_MOCK_DIR/actions" | tr -d ' ')
 assert_eq "4" "$ACTIONSCNT" "c100_four_mock_invocations"

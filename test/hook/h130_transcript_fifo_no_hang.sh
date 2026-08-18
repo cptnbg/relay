@@ -26,7 +26,16 @@ RELAY_SESSION_ID="$SID" RELAY_DIR="$RELAY_DIR" \
   "$HOOK" < "$PAYLOAD_FILE" > "$OUT_FILE" 2>"$ERR_FILE" &
 HOOK_PID=$!
 
-( sleep 10; kill -9 "$HOOK_PID" 2>/dev/null ) &
+# The watchdog runs its sleep as a traced child and kills it on TERM:
+# killing only the subshell would orphan the `sleep 10`, leaking a stray
+# process past the end of the test (and of the whole suite).
+(
+  trap 'kill "$_wd_sleep" 2>/dev/null; exit 0' TERM
+  sleep 10 &
+  _wd_sleep=$!
+  wait "$_wd_sleep" 2>/dev/null
+  kill -9 "$HOOK_PID" 2>/dev/null
+) &
 WATCHDOG_PID=$!
 
 wait "$HOOK_PID"

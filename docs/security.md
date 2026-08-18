@@ -3,6 +3,16 @@
 Every claim here was verified empirically against Claude Code **2.1.233** on macOS 26
 (Darwin 25.5.0), bash 3.2.57. Probes live in `test/lint/probe0-*.sh` and are re-runnable.
 
+That pinning is meant literally, in both directions. Every finding below is only as
+current as its probe run, the probes cost real money, and **they have not been re-run
+against any CLI newer than 2.1.233** — including 2.1.234, a version this repository
+already references elsewhere (the marketplace schema notes in `RELEASING.md` were read
+from the 2.1.234 binary). Until someone re-runs the probes (`CONTRIBUTING.md`, "The paid
+probes"), what a newer CLI changed is unverified, not assumed unchanged. Relay's runtime
+covers only part of that gap on its own: the sandbox-enforcement probe's cache key
+includes `claude --version`, so a version change forces a fresh runtime proof of the
+sandbox — but of the sandbox alone, not of the other findings below.
+
 ## Phase 0 findings
 
 ### 1. A repository's `.claude/settings.json` executes under `-p` — CRITICAL
@@ -70,9 +80,12 @@ form is used regardless, because shell form re-parses the substituted path.
 
 The trap: **a hook that writes outside `sandbox.filesystem.allowWrite` fails silently, and
 the symptom is indistinguishable from "the hook never fired."** This cost real debugging
-time during Phase 0. Relay's state directory is in `allowWrite` by construction, and the
-context guard writes only there — but any future hook must respect the same rule, and the
-test suite asserts it.
+time during Phase 0. The sandbox's `allowWrite` is exactly the project, relay's
+session-writable work directory `$STATE/work/`, and `$TMPDIR`
+(`plugins/relay/scripts/relay-settings.sh:236`); the context guard writes only under
+`$STATE/work/` — the supervisor-only remainder of the state directory (state.json,
+journal.log, exec.json, locks/) is deliberately *not* writable from inside a session.
+Any future hook must respect the same rule, and the test suite asserts it.
 
 Related, and worth knowing before writing a probe: **a sandbox-blocked tool call does not
 necessarily emit a `PostToolUse` event.** A probe whose only tool call is the blocked one
@@ -136,10 +149,20 @@ has to be probed against the real CLI.
 
 1. **Fail closed on settings.** `-p` silently ignores settings files that fail validation,
    so relay must positively confirm enforcement before every run rather than assume it.
-   The production acceptance probe is `probe0-sandbox.sh`'s shape: assert a `denyRead` path
-   is actually unreadable and a non-allowlisted host is actually unreachable, in a
-   relay-owned scratch directory. If either assertion is *contradicted* — the canary is
-   readable, or the host answers — refuse to start.
+   The production acceptance probe (`relay_settings_probe`,
+   `plugins/relay/scripts/relay-settings.sh:403-492`) is `probe0-sandbox.sh`'s shape:
+   in a relay-owned scratch directory (`$STATE/work/probe/`), assert that a `denyRead`
+   canary is actually unreadable and that a host outside `network.allowedDomains` is
+   actually unreachable. Both assertions leave evidence in files the supervisor reads,
+   never in the model's prose: the canary read is redirected into a proof file (a
+   sandbox that is off puts the canary's value there whatever the model then says,
+   `relay-settings.sh:431-439`), and the egress attempt records `code=`/`rc=` marker
+   lines that the verdict parser reads by key — never "the first three digits in the
+   file", which once misread curl's own "port 443" error text as an HTTP status and
+   refused a working sandbox (`relay-settings.sh:326-331`). The run is refused if the
+   canary's value appears in the proof file, the session JSON, or stderr; if the probe
+   session did not complete cleanly (`.is_error == false`); or if the egress verdict is
+   `reachable` (`relay-settings.sh:467-489`).
 
    One deliberate asymmetry, added when relay's own audit found the runtime probe testing
    only the canary while this rule claimed both: an egress attempt relay cannot interpret
@@ -158,7 +181,7 @@ has to be probed against the real CLI.
    (killing the context guard); `--no-session-persistence` destroys the transcript the
    guard reads. `--bare` is used *only* in `--hardened` mode, deliberately, where the
    context guard degrades to supervisor-side estimation.
-6. **Pin the CLI version.** Record `claude --version` at `relay doctor` time; a version
+6. **Pin the CLI version.** Record `claude --version` at `/relay-doctor` time; a version
    change forces re-running doctor, because the settings schema may have moved.
 7. **The payload must say what is allowed, not only what is forbidden.** Under
    `dontAsk` an omitted `allow` list is not a permissive default — it is a total
@@ -179,6 +202,6 @@ has to be probed against the real CLI.
 ## Local hygiene note
 
 `~/.claude/.credentials.json` ships mode **0644** (inside a 0700 directory, so other OS
-users cannot reach it, but every process running as the user can). `relay doctor` reports
+users cannot reach it, but every process running as the user can). `/relay-doctor` reports
 this and prints `chmod 600 ~/.claude/.credentials.json`; relay never modifies files outside
 its own state directory.

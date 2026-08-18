@@ -18,16 +18,29 @@ jobs:
             plugins/relay/scripts/*.sh \
             plugins/relay/scripts/lib/*.sh \
             plugins/relay/hooks/*.sh \
-            test/run.sh test/lib/*.sh test/lint/*.sh test/bin/claude
+            test/run.sh test/lib/*.sh test/lint/*.sh test/bin/claude \
+            test/publish-check.sh
+          # The case and hook files are sourced fragments: they run inside the
+          # harness subshell, so variables like ROOT and RELAY_MOCK_DIR arrive
+          # from the runner (SC2154) and read-placeholders from destructuring
+          # `IFS='|' read -r A B C` are deliberately unused (SC2034).
+          shellcheck -s bash -S warning -e SC2034,SC2154 \
+            test/cases/*.sh test/hook/*.sh
 
-      # macOS ships bash 3.2.57. A bash-4ism passes on this runner and fails on
-      # a user's Mac, so it has to be caught by pattern rather than by running.
       - name: no bash 4+ constructs
         run: bash test/lint/no-bash4.sh
 
-      # Keeps the README's "no node, no python, no coreutils" promise honest.
       - name: no forbidden dependencies
         run: bash test/lint/no-deps.sh
+
+      - name: plugin layer consistency
+        run: bash test/lint/plugin-layer.sh
+
+      - name: publish gates (pure-shell subset)
+        # publish-check.sh guards its `claude plugin validate` gate behind
+        # `command -v claude`, so everything else (doc gates, exit-code
+        # citations) still gates here without the CLI.
+        run: bash test/publish-check.sh
 
       - name: manifests are valid json
         run: |
@@ -37,8 +50,6 @@ jobs:
             jq -e . "$f" > /dev/null || { echo "invalid: $f"; exit 1; }
           done
 
-      # plugin.json and the marketplace entry drifting apart is the single most
-      # common cause of "I installed it but I'm on an old version".
       - name: plugin and marketplace versions agree
         run: |
           a=$(jq -r .version plugins/relay/.claude-plugin/plugin.json)
@@ -59,8 +70,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew list jq >/dev/null 2>&1 || brew install jq
 
-      # Proves the suite never quietly depends on coreutils. `timeout` exists on
-      # ubuntu, so relay's own watchdog must be what is under test there too.
       - name: assert coreutils timeout is absent (macos)
         if: runner.os == 'macOS'
         run: |
@@ -72,20 +81,30 @@ jobs:
       - name: record bash version
         run: bash --version | head -1
 
+      - name: assert system bash is 3.x (macos)
+        # The portability contract is bash 3.2.57. If Apple ever ships a
+        # newer /bin/bash, this job would silently stop proving anything —
+        # assert it instead of just printing it.
+        if: runner.os == 'macOS'
+        run: |
+          /bin/bash --version | head -1
+          /bin/bash -c '[ "${BASH_VERSINFO[0]}" -eq 3 ] || {
+            echo "expected bash 3.x at /bin/bash, got $BASH_VERSION"; exit 1; }'
+
       - name: unit suites
         run: |
           bash test/lib/test-relay-lib.sh
           bash test/lib/test-relay-git.sh
 
-      # No API calls: the mock `claude` is first on PATH for the whole run.
       - name: hook and supervisor suites
         run: bash test/run.sh
 
-      # macOS /bin/bash IS 3.2.57 — run the suite explicitly under it so the
-      # real floor is exercised, not just whatever bash the runner defaults to.
-      - name: rerun under system bash 3.2 (macos)
+      - name: rerun everything under system bash 3.2 (macos)
         if: runner.os == 'macOS'
-        run: /bin/bash test/run.sh
+        run: |
+          /bin/bash test/lib/test-relay-lib.sh
+          /bin/bash test/lib/test-relay-git.sh
+          /bin/bash test/run.sh
 
       - name: keep sandboxes on failure
         if: failure()
