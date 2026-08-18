@@ -14,6 +14,12 @@ jobs:
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          # Print it: this job is the authority on what "shellcheck clean"
+          # means, and the version matters. A newer local shellcheck can pass a
+          # file this one rejects (SC2120 on relay_unlock did exactly that on
+          # the first CI run this repository ever had), so a contributor whose
+          # machine is greener than CI needs to see why.
+          shellcheck --version | sed -n 's/^version: /shellcheck version: /p'
           shellcheck -s bash -S warning \
             plugins/relay/scripts/*.sh \
             plugins/relay/scripts/lib/*.sh \

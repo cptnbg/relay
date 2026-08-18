@@ -344,7 +344,14 @@ _relay_lock_try_break() {
 # ===========================================================================
 # relay_unlock [lockdir]
 # Never releases a lock owned by a different pid. Defaults to RELAY_LOCK_HELD.
+#
+# The argument is deliberately optional and every in-tree caller relies on the
+# default, which shellcheck 0.9 reports as SC2120 ("references arguments, but
+# none are ever passed"). Keeping the parameter is right — the test suite calls
+# it with an explicit lockdir, and a caller holding more than one lock needs it
+# — so the check is silenced here rather than the signature narrowed.
 # ===========================================================================
+# shellcheck disable=SC2120
 relay_unlock() {
   _rlu_dir="${1:-${RELAY_LOCK_HELD:-}}"
   if [ -z "$_rlu_dir" ] || [ ! -d "$_rlu_dir" ]; then

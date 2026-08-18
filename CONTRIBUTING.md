@@ -67,6 +67,13 @@ bash test/lint/no-bash4.sh
 bash test/lint/no-deps.sh
 ```
 
+**Version skew is real.** CI installs shellcheck from Ubuntu's apt (0.9.0 at
+time of writing) and prints the version it used. A newer shellcheck on your
+machine can be *greener* than CI: 0.11 accepts `relay_unlock`'s optional
+argument where 0.9 raises SC2120, which is how the first CI run this
+repository ever had went red on a tree that was clean locally. If CI
+disagrees with you about shellcheck, CI is the one that decides.
+
 CI (`.github/workflows/ci.yml`) runs all of the above, plus `shellcheck -s
 bash -S warning` over the shipped scripts, the test libraries and the mock
 (`.github/workflows/ci.yml:14-21`), and reruns `test/run.sh` explicitly under
