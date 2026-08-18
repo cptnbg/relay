@@ -20,6 +20,7 @@ export RELAY_SESSION_TIMEOUT=2
 export RELAY_MOCK_HANG_SECS=10
 export RELAY_MOCK_SCRIPT="hang,work,complete"
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 

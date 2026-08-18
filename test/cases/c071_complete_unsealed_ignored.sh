@@ -36,6 +36,7 @@ printf '# Relay build complete\n\nAll done (allegedly, and not sealed).\n' > "$S
 export RELAY_SKIP_PROBE=1
 export RELAY_MOCK_SCRIPT="noop"
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 

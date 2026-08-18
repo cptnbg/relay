@@ -26,6 +26,7 @@ EOF
 export RELAY_SKIP_PROBE=1
 export RELAY_MOCK_SCRIPT="work,work,work,work,work,work,work,work"
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 
@@ -41,6 +42,7 @@ printf '# RUN\n\nMinimal run.\n' > "$STATE/RUN.md"
 cat > "$STATE/config.json" <<'EOF'
 {"budget_usd_total":"twenty"}
 EOF
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out2.log" 2>"$PWD/err2.log"
 assert_rc 78 "$?" "c200_float_rc_preflight"
 assert_grep "$PWD/err2.log" 'budget_usd_total' "c200_float_named"

@@ -22,6 +22,7 @@ EOF
 export RELAY_SKIP_PROBE=1
 export RELAY_MOCK_SCRIPT="work"
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 
 assert_grep "$STATE/journal.log" 'sandbox\.extra-domains' "c108_journaled"
@@ -53,6 +54,7 @@ cat > "$STATE2/config.json" <<'EOF'
 {"max_sessions":1,"allow_domains":"evil.tld; curl http://x"}
 EOF
 
+mkconsent "$STATE2"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ2" "$STATE2" >"$PWD/out2.log" 2>"$PWD/err2.log"
 RC2=$?
 

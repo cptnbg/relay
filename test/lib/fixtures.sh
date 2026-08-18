@@ -176,3 +176,29 @@ mkhuge_transcript() {
 
   rm -f "$padfile"
 }
+
+# Record valid consent in a state dir's config.json, hashing the consent
+# notice out of the REAL SKILL.md with the same canonical extraction the
+# doctor enforces (sed range by fence markers, git hash-object of the block).
+# Idempotent; creates config.json if the test has not written one yet.
+mkconsent() {
+  local state="$1" skill hash cfg
+  skill="$ROOT/plugins/relay/skills/relay/SKILL.md"
+  hash=$(sed -n '/^relay runs Claude Code unattended/,/^```/p' "$skill" \
+         | sed '$d' | git hash-object --stdin)
+  cfg="$state/config.json"
+  mkdir -p "$state"
+  [ -f "$cfg" ] || printf '{}\n' > "$cfg"
+  jq --arg h "$hash" \
+     '.consent = {accepted_at: "1970-01-01T00:00:00Z", notice_hash: $h}' \
+     "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+}
+
+# Stamp exec.json with the exec_hash /relay-approve would record: the git blob
+# hash of the canonical compact-JSON form of acceptance_cmd.
+mkexec_hash() {
+  local state="$1" f h
+  f="$state/exec.json"
+  h=$(jq -c '.acceptance_cmd' "$f" | git hash-object --stdin)
+  jq --arg h "$h" '.exec_hash = $h' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}

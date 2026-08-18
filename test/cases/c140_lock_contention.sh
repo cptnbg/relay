@@ -47,6 +47,7 @@ trap cleanup EXIT
 # the real supervisor running, orphaned. This form backgrounds
 # relay-supervisor.sh itself, so PID1 is the pid that actually holds the
 # lock.
+mkconsent "$STATE"
 RELAY_SESSION_TIMEOUT=3 RELAY_MOCK_HANG_SECS=30 RELAY_MOCK_SCRIPT="hang" \
   bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" \
   >"$PWD/out1.log" 2>"$PWD/err1.log" &
@@ -59,6 +60,7 @@ while [ ! -f "$STATE/locks/run.d/owner" ] && [ "$i" -le 30 ]; do
 done
 assert_file "$STATE/locks/run.d/owner" "c140_setup_supervisor1_acquired_lock"
 
+mkconsent "$STATE"
 RELAY_MOCK_SCRIPT="work" bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out2.log" 2>"$PWD/err2.log"
 RC2=$?
 

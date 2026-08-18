@@ -28,6 +28,7 @@ export RELAY_MOCK_SCRIPT="work,work,complete"
 
 BEFORE_COMMITS=$(git -C "$PROJ" rev-list --count HEAD)
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 

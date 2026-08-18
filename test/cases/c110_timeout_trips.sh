@@ -23,6 +23,7 @@ export RELAY_MOCK_HANG_SECS=30
 export RELAY_MOCK_SCRIPT="hang"
 
 T0=$(date +%s)
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 T1=$(date +%s)

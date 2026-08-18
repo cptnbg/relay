@@ -25,6 +25,7 @@ jq -nc '{done:["did some prior setup"],
 export RELAY_SKIP_PROBE=1
 export RELAY_MOCK_SCRIPT="noop,work,complete"
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 

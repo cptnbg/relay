@@ -1,4 +1,6 @@
 {
+  "plan_path": "",
+
   "max_sessions": 12,
   "session_timeout_secs": 5400,
   "stall_limit": 3,
@@ -17,5 +19,9 @@
   "max_fable_sessions": 3,
 
   "on_limit": "wait",
-  "max_usage_retries": 20
+  "max_usage_retries": 20,
+
+  "allow_domains": "",
+  "keep_sessions": 5,
+  "keep_days": 7
 }

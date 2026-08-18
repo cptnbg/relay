@@ -45,6 +45,7 @@ trap cleanup EXIT
 # owner — kill -9 on the wrapper would leave the real supervisor (and the
 # lock) alive, which is exactly what happened the first time this test was
 # written. This form backgrounds relay-supervisor.sh itself.
+mkconsent "$STATE"
 RELAY_SESSION_TIMEOUT=5 RELAY_MOCK_HANG_SECS=20 RELAY_MOCK_SCRIPT="hang" \
   bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" \
   >"$PWD/out1.log" 2>"$PWD/err1.log" &
@@ -65,6 +66,7 @@ while kill -0 "$PID1" 2>/dev/null && [ "$i" -le 20 ]; do
 done
 wait "$PID1" 2>/dev/null
 
+mkconsent "$STATE"
 RELAY_MOCK_SCRIPT="work,complete" bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out2.log" 2>"$PWD/err2.log"
 RC2=$?
 

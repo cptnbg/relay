@@ -29,6 +29,7 @@ export RELAY_BACKOFF_BASE=1
 # First invocation hits a usage limit (consuming the inbox), then real work.
 export RELAY_MOCK_SCRIPT="usagelimit,work,complete"
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 

@@ -31,6 +31,7 @@ cat > "$STATE/state.json" <<'EOF'
 {"run_id":"c190","status":"running","session_count":"1","ctx_baseline":"69000","next_tier":"opus","next_mode":"normal","commits_at_start":"2"}
 EOF
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 
@@ -57,6 +58,7 @@ cat > "$STATE2/state.json" <<'EOF'
 {"run_id":"c190b","status":"running","session_count":"0","ctx_baseline":"69000","next_tier":"opus","next_mode":"normal","commits_at_start":"2"}
 EOF
 
+mkconsent "$STATE2"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ2" "$STATE2" >"$PWD/out2.log" 2>"$PWD/err2.log"
 
 assert_no_grep "$STATE2/journal.log" 'window-too-small' "c190_adequate_window_allowed"

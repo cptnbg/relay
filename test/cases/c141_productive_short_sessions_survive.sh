@@ -30,6 +30,7 @@ export RELAY_MOCK_SCRIPT="work,work,work"
 # all of them "short" without making the test slow.
 export RELAY_MIN_SESSION_SECS=3600
 
+mkconsent "$STATE"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out.log" 2>"$PWD/err.log"
 RC=$?
 

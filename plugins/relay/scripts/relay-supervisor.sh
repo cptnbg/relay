@@ -81,6 +81,16 @@ cfg() { # key default
   [ -n "$_v" ] && printf '%s' "$_v" || printf '%s' "$2"
 }
 
+# A 40-hex git blob id, and nothing else. Used wherever a recorded hash gates a
+# decision: an empty or mangled hash must read as "unverifiable", never as a
+# wildcard that happens to compare equal to another empty string.
+relay_is_hex40() {
+  case "${1:-}" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 MAX_SESSIONS=$(cfg max_sessions 12)
 SESSION_TIMEOUT=$(cfg session_timeout_secs 5400)
 STALL_LIMIT=$(cfg stall_limit 3)
@@ -137,6 +147,36 @@ if [ -n "$ACCEPT_CMD_JSON" ] && [ "$ACCEPT_CMD_JSON" != "null" ]; then
     printf 'relay: exec.json acceptance_cmd is not a usable argv array\n' >&2
     exit "$EX_PREFLIGHT"
   fi
+  # Approval integrity. `/relay-approve` records exec_hash = git hash-object of
+  # the canonical `jq -c` form of acceptance_cmd, at the moment the human saw
+  # and confirmed the exact argv. An acceptance_cmd with no valid exec_hash was
+  # never approved, so refusing here is what makes "any later change to a
+  # command requires re-approval" a mechanism instead of a sentence in a doc.
+  # (The MATCH is verified again immediately before the command runs, from the
+  # file as it exists then — see verify_complete.)
+  EXEC_HASH_REC=$(jq -r '.exec_hash // empty' "$STATE/exec.json" 2>/dev/null)
+  if ! relay_is_hex40 "$EXEC_HASH_REC"; then
+    relay_journal "exec.hash-missing" "$(printf '%s' "$EXEC_HASH_REC" | head -c 80)"
+    printf 'relay: exec.json has an acceptance_cmd but no valid exec_hash.\n' >&2
+    printf 'relay: the command was never approved; run /relay-approve to approve it.\n' >&2
+    exit "$EX_PREFLIGHT"
+  fi
+fi
+
+# The plan is the canonical statement of WHAT to build, and every session is
+# told to read it before doing anything else. A run pointed at a plan file that
+# does not exist would not error — each session would silently proceed on
+# nothing but RUN.md and the previous handoff, which is exactly the drift the
+# plan exists to prevent. A missing plan is a misconfiguration; refuse it.
+case "$PLAN_PATH" in
+  /*) : ;;
+  *)  PLAN_PATH="$PROJECT/$PLAN_PATH" ;;
+esac
+if [ ! -f "$PLAN_PATH" ]; then
+  relay_journal "preflight.plan-missing" "$PLAN_PATH"
+  printf 'relay: plan file does not exist: %s\n' "$PLAN_PATH" >&2
+  printf 'relay: set plan_path in %s to the canonical plan file (see /relay-init).\n' "$CONFIG" >&2
+  exit "$EX_PREFLIGHT"
 fi
 
 # Test hooks: the suite compresses time so cases run in seconds.
@@ -146,6 +186,18 @@ BACKOFF_BASE="${RELAY_BACKOFF_BASE:-900}"
 BACKOFF_MAX="${RELAY_BACKOFF_MAX:-3600}"
 
 TIER_DEFAULT=$(cfg model_tier opus)
+# model_tier is handed to `claude --model` verbatim and also selects the
+# context window. A junk value used to fall through window_for_tier's `*)` arm
+# to window_opus silently, then reach --model, where the CLI's reaction is not
+# relay's to predict. Refuse at preflight instead of guessing.
+case "$TIER_DEFAULT" in
+  opus|sonnet|fable) : ;;
+  *)
+    relay_journal "config.model-tier-invalid" "$(printf '%s' "$TIER_DEFAULT" | head -c 80)"
+    printf 'relay: model_tier must be one of opus|sonnet|fable, got: %s\n' "$TIER_DEFAULT" >&2
+    printf 'relay: refusing to run rather than pass an unvalidated model name to claude.\n' >&2
+    exit "$EX_PREFLIGHT" ;;
+esac
 window_for_tier() {
   case "$1" in
     sonnet) cfg window_sonnet 200000 ;;
@@ -619,6 +671,36 @@ verify_complete() {
     relay_journal "complete.rejected" "no commits were made (start=$_start now=$_now)"; return 1
   fi
   if [ -n "$ACCEPT_CMD_JSON" ] && [ "$ACCEPT_CMD_JSON" != "null" ]; then
+    # Approval integrity, verified immediately before the command runs. The
+    # state split (A1) already made exec.json supervisor-only — it is not in
+    # the sandbox's allowWrite — so a sandboxed session cannot rewrite it; the
+    # remaining tamper vector is an out-of-band edit between /relay-approve and
+    # this moment. Re-read the file as it exists NOW (catching mid-run edits,
+    # not just pre-start ones) and require that (a) the argv on disk is still
+    # the argv captured at preflight, and (b) its canonical-JSON git blob hash
+    # equals the recorded exec_hash. Any disagreement is a security stop for a
+    # human, not an ordinary rejection: something rewrote a command relay is
+    # about to execute.
+    _ex_now=$(jq -c '.acceptance_cmd // empty' "$STATE/exec.json" 2>/dev/null)
+    _ex_rec=$(jq -r '.exec_hash // empty' "$STATE/exec.json" 2>/dev/null)
+    _ex_hash=$(printf '%s\n' "$_ex_now" | git hash-object --stdin 2>/dev/null)
+    if [ "$_ex_now" != "$ACCEPT_CMD_JSON" ] || ! relay_is_hex40 "$_ex_hash" \
+       || [ "$_ex_hash" != "$_ex_rec" ]; then
+      relay_journal "exec.hash-mismatch" "recorded=$(printf '%s' "$_ex_rec" | head -c 40) computed=$(printf '%s' "$_ex_hash" | head -c 40)"
+      { printf '# BLOCKED — acceptance command failed approval verification\n\n'
+        printf 'The acceptance command in exec.json no longer matches the exec_hash\n'
+        printf 'recorded when it was approved. Something edited a command relay was\n'
+        printf 'about to execute, after the human approved a different one.\n\n'
+        printf '## What to do\n\n'
+        printf 'Inspect %s, decide whether the current\n' "$STATE/exec.json"
+        printf 'command is what you want, then re-approve it with /relay-approve.\n'
+        printf 'Then: /relay-resume\n\n<!-- relay:sealed -->\n'
+      } > "$WORK/BLOCKED.md" 2>/dev/null
+      relay_notify "relay: blocked" "acceptance command does not match its approval hash"
+      state_set status "blocked" reason "exec-hash-mismatch"
+      relay_unlock; exit "$EX_BLOCKED"
+    fi
+    unset _ex_now _ex_rec _ex_hash
     relay_journal "acceptance.run" "$ACCEPT_CMD_JSON"
     # Loaded into positional parameters and executed directly. An earlier
     # version re-quoted the elements into one string and `eval`'d it, which

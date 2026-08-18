@@ -111,6 +111,25 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Repository state.
 # ---------------------------------------------------------------------------
+say "plugin root"
+# CLAUDE_PLUGIN_ROOT is not guaranteed to exist in the Bash-tool environment,
+# so SKILL.md resolves the root itself (see "Resolve the plugin root"). What
+# doctor can verify is that whatever root is in play actually IS a relay
+# install. An unresolvable root is a hard failure: every command the skill
+# issues would either run nothing or run the wrong thing.
+_root=$(cd "$SELF_DIR/.." 2>/dev/null && pwd)
+if [ -z "$_root" ] || [ ! -f "$_root/scripts/relay-supervisor.sh" ]; then
+  fail "plugin root does not contain scripts/relay-supervisor.sh: ${_root:-$SELF_DIR/..}"
+  fixit "the relay install is broken; reinstall the relay plugin"
+else
+  pass "plugin root: $_root"
+fi
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ ! -f "${CLAUDE_PLUGIN_ROOT}/scripts/relay-supervisor.sh" ]; then
+  fail "CLAUDE_PLUGIN_ROOT is set but is not a relay install: ${CLAUDE_PLUGIN_ROOT}"
+  fixit "reinstall the relay plugin, or unset CLAUDE_PLUGIN_ROOT; an unresolved"
+  fixit "root makes every scripted relay command fail — invisibly when detached"
+fi
+
 say "repository"
 if ! ( cd "$PROJECT" 2>/dev/null && relay_git rev-parse --is-inside-work-tree >/dev/null 2>&1 ); then
   fail "not inside a git work tree: $PROJECT"
@@ -239,6 +258,50 @@ else
            pass "$((_free/1048576)) GB free"
          fi ;;
     esac
+  fi
+
+  say "consent"
+  # SECURITY.md promises that a change to the consent terms invalidates
+  # recorded consent. This check is that promise's mechanism: recompute the
+  # hash of the consent notice as it reads in the CURRENTLY INSTALLED SKILL.md
+  # and refuse to run unless config.json records consent to exactly those
+  # bytes. The extraction below is the pinned canonical one from SKILL.md's
+  # init step 6: the fenced notice block, from its first line to the line
+  # before the closing fence, hashed with `git hash-object --stdin`. If the
+  # hash cannot be computed at all, that is unverifiable consent, and
+  # unverifiable means refuse — fail closed.
+  _skill="$SELF_DIR/../skills/relay/SKILL.md"
+  _notice=""
+  if [ -f "$_skill" ]; then
+    _notice=$(sed -n '/^relay runs Claude Code unattended/,/^```/p' "$_skill" 2>/dev/null \
+              | sed '$d' | git hash-object --stdin 2>/dev/null)
+  fi
+  case "$_notice" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) : ;;
+    *) _notice="" ;;
+  esac
+  _consent=$(jq -r '.consent.notice_hash // empty' "$STATE/config.json" 2>/dev/null)
+  if [ -z "$_notice" ]; then
+    fail "cannot compute the consent notice hash from $_skill"
+    fixit "the relay install is broken (SKILL.md missing or unreadable); reinstall the plugin"
+  elif [ -z "$_consent" ]; then
+    fail "no recorded consent in $STATE/config.json"
+    fixit "run /relay-init: the consent gate records consent.notice_hash there"
+  elif [ "$_consent" != "$_notice" ]; then
+    fail "the consent notice has changed since consent was recorded"
+    fixit "the terms in SKILL.md are no longer the terms that were accepted;"
+    fixit "re-run /relay-init and re-accept the current notice"
+  else
+    pass "recorded consent matches the current notice"
+  fi
+
+  # Not a failure: relay still verifies COMPLETE via sealed sentinel, clean
+  # tree and new commits. But with no acceptance command there is nothing
+  # EXECUTABLE standing between "the model says it is done" and EX_OK.
+  if ! jq -e '.acceptance_cmd | (type == "array" and length > 0)' "$STATE/exec.json" >/dev/null 2>&1; then
+    warn "no acceptance command configured; COMPLETE is gated only on commits + clean tree (set one with /relay-approve)"
+  else
+    pass "acceptance command configured"
   fi
 fi
 
