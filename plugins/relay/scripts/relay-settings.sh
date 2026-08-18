@@ -46,19 +46,28 @@ IFS=$' \t\n'
 # degrades to matching nothing is worse than no guard at all.
 
 # Paths whose contents must never be readable by sandboxed commands.
+#
+# Emitted with `~` expanded to $HOME rather than as a literal tilde. The
+# permission-rule parser and the OS sandbox's filesystem layer are different
+# code paths, and the acceptance probe only ever proved an ABSOLUTE denyRead
+# path (the canary). A literal `~` that the sandbox layer does not expand would
+# make this entire list inert while the probe still passed — so relay expands
+# it itself and never depends on the CLI to do so.
 relay_settings_default_denyread() {
-  cat <<'EOF'
-~/.ssh
-~/.aws
-~/.gnupg
-~/.config/gcloud
-~/.kube
-~/.docker
-~/.npmrc
-~/.netrc
-~/.claude/.credentials.json
-~/Library/Keychains
+  _h="${HOME:-/root}"
+  cat <<EOF
+$_h/.ssh
+$_h/.aws
+$_h/.gnupg
+$_h/.config/gcloud
+$_h/.kube
+$_h/.docker
+$_h/.npmrc
+$_h/.netrc
+$_h/.claude/.credentials.json
+$_h/Library/Keychains
 EOF
+  unset _h
 }
 
 # Under `--permission-mode dontAsk`, anything not explicitly allowed is REFUSED
@@ -168,12 +177,17 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# relay_settings_build <project_dir> <state_dir> <hook_path> [extra_domains_csv]
+# relay_settings_build <project_dir> <work_dir> <hook_path> [extra_domains_csv]
 # Emits the complete inline --settings JSON on stdout.
+#
+# The second argument is the session-WRITABLE work dir ($STATE/work), NOT the
+# whole state dir. Only it and the project go into filesystem.allowWrite, so a
+# prompt-injected session cannot write state.json/journal.log/exec.json/locks/
+# — those live at the supervisor-only state root, one level up, out of reach.
 # ---------------------------------------------------------------------------
 relay_settings_build() {
   _proj="${1:?project dir required}"
-  _state="${2:?state dir required}"
+  _work="${2:?work dir required}"
   _hook="${3:?hook path required}"
   _extra_domains="${4:-}"
 
@@ -194,7 +208,7 @@ relay_settings_build() {
 
   jq -nc \
     --arg proj "$_proj" \
-    --arg state "$_state" \
+    --arg work "$_work" \
     --arg hook "$_hook" \
     --arg tmp "${TMPDIR:-/tmp}" \
     --argjson domains "$_domains_json" \
@@ -219,7 +233,7 @@ relay_settings_build() {
           allowedDomains: $domains
         },
         filesystem: {
-          allowWrite: [ $proj, $state, $tmp ],
+          allowWrite: [ $proj, $work, $tmp ],
           denyRead: $denyread
         }
       },
@@ -310,8 +324,11 @@ relay_settings_egress_host() {
 # Kept separate from the probe itself precisely so it can be unit-tested against
 # fixture files with zero API calls — the probe around it cannot be.
 #
-# The contract with the probe command: the file holds curl's `%{http_code}`
-# followed by a line reading `rc=<exit status>`.
+# The contract with the probe command: the file holds a line `code=<http_code>`
+# and a line `rc=<curl exit status>`, each on its own line. Both are read by an
+# explicit `key=` marker — NEVER by "the first three digits in the file", which
+# used to misread curl's own error text ("...port 443...") as an HTTP 443 and
+# flip a blocked host to `reachable`, refusing a working sandbox.
 # ---------------------------------------------------------------------------
 relay_settings_egress_verdict() {
   _egv_file="${1:-}"
@@ -322,7 +339,7 @@ relay_settings_egress_verdict() {
   fi
 
   _egv_rc=$(grep -o 'rc=[0-9][0-9]*' "$_egv_file" 2>/dev/null | tail -1 | cut -d= -f2)
-  _egv_code=$(grep -oE '[0-9][0-9][0-9]' "$_egv_file" 2>/dev/null | head -1)
+  _egv_code=$(grep -o 'code=[0-9][0-9]*' "$_egv_file" 2>/dev/null | tail -1 | cut -d= -f2)
 
   case "$_egv_rc" in
     ''|*[!0-9]*)
@@ -373,6 +390,16 @@ relay_settings_egress_verdict() {
 # would mean intentionally leaking a canary on the user's machine. The control
 # lives in the test suite, which proves this probe *can* observe a leak.
 # ---------------------------------------------------------------------------
+# Single-quote a string for safe interpolation into a shell command the model
+# will run. Paths under $STATE can contain spaces (a $HOME like "/Users/John
+# Smith"); an unquoted path split the redirect target, so `cat` read the wrong
+# file and the netfile was never written — and the canary then looked unreadable
+# for the WRONG reason while is_error stayed false, i.e. the sandbox reported
+# proven having proven nothing. Every quote in the input is escaped `'\''`.
+_relay_sq() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 relay_settings_probe() {
   _settings="${1:?settings json required}"
   _scratch="${2:?scratch dir required}"
@@ -381,10 +408,16 @@ relay_settings_probe() {
   _work="$_scratch/probe-work"
   _canary="$_scratch/probe-canary.txt"
   _netfile="$_scratch/probe-egress.txt"
-  _value="RELAY-PROBE-CANARY-DO-NOT-LEAK-$$"
+  _readproof="$_scratch/probe-read.out"
+  # Neutral, high-entropy canary. NOT a "DO-NOT-LEAK"-labelled string: leak
+  # detection must not depend on the model choosing to echo something alarming
+  # back into its answer. Detection is by FILE below, not by the model's prose.
+  _rand=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -cd 'a-f0-9')
+  [ -n "$_rand" ] || _rand="p$$x$(date +%s 2>/dev/null)"
+  _value="relayprobe${_rand}"
 
   rm -rf "$_work"
-  rm -f "$_netfile"
+  rm -f "$_netfile" "$_readproof"
   mkdir -p "$_work" || return 1
   printf '%s\n' "$_value" > "$_canary" || return 1
 
@@ -395,17 +428,23 @@ relay_settings_probe() {
   _probe_settings=$(printf '%s' "$_settings" \
     | jq -c --arg c "$_canary" '.sandbox.filesystem.denyRead += [$c]') || return 1
 
-  # The egress command writes its own evidence to a file rather than being
-  # reported back in prose: the verdict must come from curl's exit status, not
-  # from a model's summary of it.
-  _prompt="Use the Bash tool to run exactly: cat $_canary"
+  # Both probe commands write their OWN evidence to files the supervisor reads;
+  # the verdict never depends on the model's summary. Paths are shell-quoted
+  # (see _relay_sq). The canary read redirects into $_readproof: if the sandbox
+  # is off, `cat` succeeds and the canary value lands in that file regardless of
+  # what the model then says; if enforced, the read fails and the file holds the
+  # error. The egress command writes `code=`/`rc=` lines for the verdict parser.
+  _q_canary=$(_relay_sq "$_canary")
+  _q_readproof=$(_relay_sq "$_readproof")
+  _prompt="Use the Bash tool to run exactly: cat $_q_canary > $_q_readproof 2>&1; true"
   if [ -n "$_host" ]; then
+    _q_netfile=$(_relay_sq "$_netfile")
     _prompt="$_prompt
-Then use the Bash tool to run exactly: curl -sS -m 10 https://$_host -o /dev/null -w '%{http_code}' > $_netfile 2>&1; echo \"rc=\$?\" >> $_netfile
-Then reply with what the first command printed, or BLOCKED if it failed."
+Then use the Bash tool to run exactly: printf 'code=%s\\n' \"\$(curl -sS -m 10 https://$_host -o /dev/null -w '%{http_code}')\" > $_q_netfile 2>>$_q_netfile; printf 'rc=%s\\n' \"\$?\" >> $_q_netfile
+Then reply DONE."
   else
     _prompt="$_prompt
-Then reply with what you saw, or BLOCKED if it failed."
+Then reply DONE."
   fi
 
   (
@@ -422,7 +461,10 @@ Then reply with what you saw, or BLOCKED if it failed."
       < /dev/null > "$_scratch/probe-read.json" 2> "$_scratch/probe-read.err"
   )
 
-  if grep -qF "$_value" "$_scratch/probe-read.json" "$_scratch/probe-read.err" 2>/dev/null; then
+  # Primary leak check: the file the read command wrote. Secondary: the model's
+  # own output/stderr (belt and braces). Either containing the canary means the
+  # denyRead path was readable and the sandbox is not enforcing.
+  if grep -qF "$_value" "$_readproof" "$_scratch/probe-read.json" "$_scratch/probe-read.err" 2>/dev/null; then
     printf 'relay: SANDBOX NOT ENFORCED — a denyRead canary was readable.\n' >&2
     printf 'relay: refusing to run. See docs/security.md.\n' >&2
     return 1

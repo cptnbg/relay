@@ -19,18 +19,25 @@ v() { relay_settings_egress_verdict "$1"; }
 
 # curl answered: the sandbox is not confining egress. This is the case that
 # must refuse the run, so it is the one that must never be reported softly.
-printf '200\nrc=0\n' > "$PWD/net-200.txt"
+printf 'code=200\nrc=0\n' > "$PWD/net-200.txt"
 assert_eq "reachable" "$(v "$PWD/net-200.txt")" "c142_http_200_is_reachable"
 
-printf '301\nrc=0\n' > "$PWD/net-301.txt"
+printf 'code=301\nrc=0\n' > "$PWD/net-301.txt"
 assert_eq "reachable" "$(v "$PWD/net-301.txt")" "c142_any_real_status_is_reachable"
 
 # curl's own signature for "never got a response": 000 with a non-zero status.
-printf '000\nrc=28\n' > "$PWD/net-000.txt"
+printf 'code=000\nrc=28\n' > "$PWD/net-000.txt"
 assert_eq "blocked" "$(v "$PWD/net-000.txt")" "c142_000_is_blocked"
 
-printf 'curl: (7) Failed to connect to example.com port 443\n000\nrc=7\n' > "$PWD/net-err.txt"
+printf 'curl: (7) Failed to connect to example.com port 443\ncode=000\nrc=7\n' > "$PWD/net-err.txt"
 assert_eq "blocked" "$(v "$PWD/net-err.txt")" "c142_connect_failure_is_blocked"
+
+# The exact FO-5 regression: curl exits 0 but writes no code= line, and its
+# error text contains a three-digit run ("port 443"). The old parser grabbed
+# the first three digits anywhere and reported 443 -> reachable, refusing a
+# working sandbox. Reading code= by marker, a missing code is never reachable.
+printf 'curl: (6) Could not resolve host: example.com port 443\nrc=0\n' > "$PWD/net-nocode.txt"
+assert_eq "blocked" "$(v "$PWD/net-nocode.txt")" "c142_digits_in_error_text_not_reachable"
 
 # Everything relay cannot interpret is inconclusive, never "blocked". A missing
 # file is the no-curl-on-this-box case; an empty one and a status without an
@@ -40,7 +47,7 @@ assert_eq "inconclusive" "$(v "$PWD/net-absent.txt")" "c142_missing_file_is_inco
 : > "$PWD/net-empty.txt"
 assert_eq "inconclusive" "$(v "$PWD/net-empty.txt")" "c142_empty_file_is_inconclusive"
 
-printf '200\n' > "$PWD/net-norc.txt"
+printf 'code=200\n' > "$PWD/net-norc.txt"
 assert_eq "inconclusive" "$(v "$PWD/net-norc.txt")" "c142_status_without_rc_is_inconclusive"
 
 # Host selection: default, and the allowlisted-host case.

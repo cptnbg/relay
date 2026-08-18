@@ -28,7 +28,7 @@ JOURNAL="$STATE/journal.log"
 
 assert_ne "0" "$RC" "c070_did_not_report_success"
 assert_rc 27 "$RC" "c070_rc_is_completion_rejected"
-assert_no_file "$STATE/COMPLETE.md" "c070_complete_md_deleted"
+assert_no_file "$STATE/work/COMPLETE.md" "c070_complete_md_deleted"
 
 # Each rejection cycle logs "complete.rejected" TWICE: once inside
 # verify_complete() with the specific reason ("no commits were made"), and

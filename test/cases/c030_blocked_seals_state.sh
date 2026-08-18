@@ -24,8 +24,8 @@ RC=$?
 JOURNAL="$STATE/journal.log"
 
 assert_rc 20 "$RC" "c030_rc"
-assert_file "$STATE/BLOCKED.md" "c030_blocked_md_exists"
-assert_grep "$STATE/BLOCKED.md" 'relay:sealed' "c030_blocked_md_sealed"
+assert_file "$STATE/work/BLOCKED.md" "c030_blocked_md_exists"
+assert_grep "$STATE/work/BLOCKED.md" 'relay:sealed' "c030_blocked_md_sealed"
 assert_grep "$JOURNAL" 'blocked\.detected' "c030_journal_blocked_detected"
 
 exit 0

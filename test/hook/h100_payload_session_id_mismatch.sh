@@ -9,6 +9,7 @@ SID_PAYLOAD="99999999-8888-7777-6666-cccccccccccc"
 RELAY_DIR="$PWD/relay-dir"
 mkdir -p "$RELAY_DIR"
 printf '{}' > "$RELAY_DIR/state.json"
+: > "$RELAY_DIR/.relay"
 
 TRANSCRIPT="$PWD/transcript.jsonl"
 mktranscript "$TRANSCRIPT" 92

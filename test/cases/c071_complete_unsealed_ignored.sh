@@ -4,9 +4,9 @@
 #
 # NOTE on actual behaviour vs. the naive expectation: relay-supervisor.sh's
 # verify_complete() itself contains a guard
-#   sealed "$STATE/COMPLETE.md" || { relay_journal "sentinel.unsealed" ...; return 1; }
-# but BOTH call sites already gate on `sealed "$STATE/COMPLETE.md" && verify_complete`
-# (top of the loop) or `if sealed "$STATE/COMPLETE.md"; then if verify_complete; then ...`
+#   sealed "$STATE/work/COMPLETE.md" || { relay_journal "sentinel.unsealed" ...; return 1; }
+# but BOTH call sites already gate on `sealed "$STATE/work/COMPLETE.md" && verify_complete`
+# (top of the loop) or `if sealed "$STATE/work/COMPLETE.md"; then if verify_complete; then ...`
 # (after a session). verify_complete() is therefore only ever invoked once
 # sealed() has already returned true, which makes its own internal sealed()
 # check unreachable dead code in the current source — an unsealed
@@ -20,7 +20,7 @@ PROJ="$PWD/proj"
 STATE="$PWD/state"
 mkrepo "$PROJ"
 
-mkdir -p "$STATE"
+mkdir -p "$STATE" "$STATE/work"
 printf '# RUN\n\nMinimal run.\n' > "$STATE/RUN.md"
 printf '# Plan\n\n1. step one\n' > "$PROJ/plan.md"
 git -C "$PROJ" add -A >/dev/null 2>&1
@@ -31,7 +31,7 @@ cat > "$STATE/config.json" <<'EOF'
 EOF
 
 # Unsealed on purpose: no "<!-- relay:sealed -->" line anywhere in this file.
-printf '# Relay build complete\n\nAll done (allegedly, and not sealed).\n' > "$STATE/COMPLETE.md"
+printf '# Relay build complete\n\nAll done (allegedly, and not sealed).\n' > "$STATE/work/COMPLETE.md"
 
 export RELAY_SKIP_PROBE=1
 export RELAY_MOCK_SCRIPT="noop"
@@ -41,7 +41,7 @@ RC=$?
 
 assert_ne "0" "$RC" "c071_did_not_report_success"
 assert_rc 21 "$RC" "c071_rc_is_stalled"
-assert_file "$STATE/COMPLETE.md" "c071_complete_md_still_present"
-assert_no_grep "$STATE/COMPLETE.md" 'relay:sealed' "c071_still_unsealed_untouched"
+assert_file "$STATE/work/COMPLETE.md" "c071_complete_md_still_present"
+assert_no_grep "$STATE/work/COMPLETE.md" 'relay:sealed' "c071_still_unsealed_untouched"
 
 exit 0

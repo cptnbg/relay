@@ -2,7 +2,7 @@
 # prior work, must still exit 0. NOTE: verify_complete requires a NEW commit
 # beyond baseline (relay-supervisor.sh's "no commits were made" check), and
 # the mock's "complete" behaviour never itself touches the project tree —
-# only $STATE/COMPLETE.md and $STATE/continue.json. To make a single
+# only $STATE/work/COMPLETE.md and $STATE/work/continue.json. To make a single
 # "complete" session genuinely satisfy that check we leave plan.md
 # UNCOMMITTED: the mock's own `git_commit` helper does a blind `git add -A`,
 # so that scaffold file becomes the first real commit. This is deliberate,

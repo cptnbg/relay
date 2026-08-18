@@ -76,10 +76,15 @@ esac
 # ---------------------------------------------------------------------------
 # G4/G5 — state dir sanity and kill switch.
 # ---------------------------------------------------------------------------
+# RELAY_DIR is relay's session-writable work dir ($STATE/work), the only place
+# the sandbox lets this hook write. Its marker is `.relay`, touched by the
+# supervisor at startup — state.json now lives one level up at the
+# supervisor-only state root, outside this hook's allowWrite, so it can no
+# longer serve as the sanity check.
 [ -n "${RELAY_DIR:-}" ] || exit 0
 case "$RELAY_DIR" in /*) : ;; *) exit 0 ;; esac
 [ -d "$RELAY_DIR" ] || exit 0
-[ -f "$RELAY_DIR/state.json" ] || exit 0
+[ -f "$RELAY_DIR/.relay" ] || exit 0
 if [ -f "$RELAY_DIR/hook.off" ]; then exit 0; fi
 
 RUN_DIR="$RELAY_DIR/run"

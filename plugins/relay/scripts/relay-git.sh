@@ -42,12 +42,35 @@ IFS=$' \t\n'
 # all command-execution vectors, and .envrc/direnv or the agent itself can set
 # them.
 # ---------------------------------------------------------------------------
-RELAY_GIT_EMPTY_HOOKS="${TMPDIR:-/tmp}/relay-empty-hooks"
+# The empty hooks dir points core.hooksPath somewhere with no hooks, so a
+# repo-shipped .git/hooks never runs during relay's git calls. It MUST NOT be a
+# fixed, shared path: the old `${TMPDIR:-/tmp}/relay-empty-hooks` sat inside the
+# session's own sandbox allowWrite, so a prompt-injected session could drop an
+# executable `post-commit` there (which `--no-verify` does not stop) and relay's
+# next commit — run OUTSIDE the sandbox — would execute it. It is now a
+# per-process mktemp dir under $RELAY_PRIV (supervisor-only, never in
+# allowWrite), created once, verified empty and owned.
+RELAY_GIT_EMPTY_HOOKS=""
+_relay_git_hooks_dir() {
+  if [ -n "$RELAY_GIT_EMPTY_HOOKS" ] && [ -d "$RELAY_GIT_EMPTY_HOOKS" ]; then
+    printf '%s' "$RELAY_GIT_EMPTY_HOOKS"; return 0
+  fi
+  _base="${RELAY_PRIV:-${TMPDIR:-/tmp}}"
+  mkdir -p "$_base" 2>/dev/null
+  RELAY_GIT_EMPTY_HOOKS=$(mktemp -d "$_base/relay-hooks.XXXXXX" 2>/dev/null) || {
+    RELAY_GIT_EMPTY_HOOKS=""; return 1; }
+  printf '%s' "$RELAY_GIT_EMPTY_HOOKS"
+}
 
 relay_git() {
-  mkdir -p "$RELAY_GIT_EMPTY_HOOKS" 2>/dev/null
+  _rg_hooks=$(_relay_git_hooks_dir) || _rg_hooks="/dev/null/relay-no-hooks"
+  # --literal-pathspecs: relay_git_collect_paths emits literal filenames, but
+  # `git add` interprets each as a PATHSPEC. Without this, an untracked file
+  # named `*` matches (and stages) the whole repo — .env, keys, everything the
+  # filename filter just rejected — and `report[1].txt` silently stages nothing.
   command git \
-    -c "core.hooksPath=$RELAY_GIT_EMPTY_HOOKS" \
+    --literal-pathspecs \
+    -c "core.hooksPath=$_rg_hooks" \
     -c core.fsmonitor=false \
     -c protocol.ext.allow=never \
     -c protocol.file.allow=never \
@@ -231,35 +254,49 @@ relay_git_commit() {
     return 2
   fi
 
+  # Scratch under $RELAY_PRIV (supervisor-only, 0700, never in the session's
+  # allowWrite), not a predictable name in shared $TMPDIR — where a leftover
+  # session background process could rewrite the pathspec list between our write
+  # and git's read (stage anything) or truncate the staged diff (secret scan
+  # passes on an empty file).
+  _scratchbase="${RELAY_PRIV:-${TMPDIR:-/tmp}}"
+  mkdir -p "$_scratchbase" 2>/dev/null
+  _gdir=$(mktemp -d "$_scratchbase/relay-commit.XXXXXX" 2>/dev/null) || return 2
+
   _staged=0
-  _tmplist="${TMPDIR:-/tmp}/relay-stage.$$"
+  _tmplist="$_gdir/stage"
   relay_git_collect_paths "$_root" > "$_tmplist" 2>"$_tmplist.skip"
   if [ -s "$_tmplist.skip" ]; then
     cat "$_tmplist.skip" >&2
   fi
 
   if [ -s "$_tmplist" ]; then
-    # Explicit pathspec from stdin. Never `git add -A`, never `git add .`.
+    # Explicit pathspec from stdin, --literal-pathspecs (set in relay_git) so a
+    # filename is never reinterpreted as a glob/magic pathspec. Never `git add
+    # -A`, never `git add .`.
     if relay_git add --pathspec-from-file="$_tmplist" --pathspec-file-nul 2>/dev/null; then
       _staged=1
     else
       printf 'relay-git: staging failed\n' >&2
-      rm -f "$_tmplist" "$_tmplist.skip"
+      rm -rf "$_gdir"
       return 2
     fi
   fi
-  rm -f "$_tmplist" "$_tmplist.skip"
 
   if [ "$_staged" -eq 0 ] || relay_git diff --cached --quiet 2>/dev/null; then
+    rm -rf "$_gdir"
     return 0   # nothing to commit
   fi
 
-  # Scan what is actually about to enter history.
-  _diff="${TMPDIR:-/tmp}/relay-staged.$$"
-  relay_git diff --cached > "$_diff" 2>/dev/null
+  # Scan what is actually about to enter history. --text and --no-textconv force
+  # a content diff even for paths a hostile .gitattributes marks `-diff`/`binary`
+  # (which otherwise prints only "Binary files differ" and hides the secret);
+  # core.attributesFile=/dev/null neutralises a hostile global attributes file.
+  _diff="$_gdir/staged.diff"
+  relay_git -c core.attributesFile=/dev/null diff --cached --text --no-textconv > "$_diff" 2>/dev/null
   _report=$(relay_git_scan_text "$_diff")
   _scan_rc=$?
-  rm -f "$_diff"
+  rm -rf "$_gdir"
 
   if [ "$_scan_rc" -ne 0 ]; then
     relay_git reset -q 2>/dev/null

@@ -8,6 +8,7 @@ SID="11111111-2222-3333-4444-555555555555"
 RELAY_DIR="$PWD/relay-dir"
 mkdir -p "$RELAY_DIR/run"
 printf '{}' > "$RELAY_DIR/state.json"
+: > "$RELAY_DIR/.relay"
 
 CANARY="$PWD/canary.txt"
 printf 'canary-untouched-content\n' > "$CANARY"

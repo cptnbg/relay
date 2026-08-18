@@ -10,6 +10,7 @@ SID="11111111-2222-3333-4444-555555555555"
 RELAY_DIR="$PWD/relay-dir"
 mkdir -p "$RELAY_DIR"
 printf '{}' > "$RELAY_DIR/state.json"
+: > "$RELAY_DIR/.relay"
 
 # scenario A: plain garbage, no session id inside it at all
 PAYLOAD_A="$PWD/payload-a.txt"
