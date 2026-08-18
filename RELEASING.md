@@ -126,11 +126,19 @@ someone else's, which they do with:
 git verify-tag vX.Y.Z
 ```
 
-**PLACEHOLDER — maintainer key fingerprint.** The fingerprint users should
-expect `git verify-tag` to report is not recorded in this repository yet. The
-maintainer must fill it in here and in `README.md`. Do not invent one, and do
-not tell users to accept "any valid signature"; a signature they cannot compare
-to a known fingerprint proves nothing.
+The fingerprint users should expect `git verify-tag` to report, recorded here
+and in `README.md`:
+
+```
+9B62 EB00 8531 00CB FA92  AD72 C12C DEF0 D3BF 983C
+```
+
+Signing key `C12CDEF0D3BF983C` (ed25519, sign-only, expires 2028-08-17), set as
+`user.signingkey` in this repository's config. Keep both copies of the
+fingerprint in step: one recorded in a file the other does not match is how a
+user ends up comparing against the wrong value. Never tell users to accept "any
+valid signature" — a signature they cannot compare to a known fingerprint
+proves nothing.
 
 ## 7. The archive and its sha256
 

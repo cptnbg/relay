@@ -98,13 +98,13 @@ git verify-tag vX.Y.Z
 Then check the reported signing key against the maintainer's fingerprint:
 
 ```
-PLACEHOLDER — maintainer GPG key fingerprint is not published yet
+9B62 EB00 8531 00CB FA92  AD72 C12C DEF0 D3BF 983C
 ```
 
-**That is a placeholder, not a fingerprint, and the difference matters.** Until
-the real value is recorded here, `git verify-tag` tells you only that *some*
-key signed the tag — it says nothing about whose. Do not treat "any valid
-signature" as verification.
+**Compare it, do not skip it.** `git verify-tag` on its own tells you only that
+*some* key signed the tag — it says nothing about whose. A signature you cannot
+compare against a known fingerprint proves nothing, so treating "any valid
+signature" as verification defeats the point of signing at all.
 
 `RELEASING.md` is the procedure that produces those tags, including why the
 marketplace entry pins a release archive by sha256 instead of tracking a
