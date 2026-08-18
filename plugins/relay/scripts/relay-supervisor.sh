@@ -94,6 +94,36 @@ REVIEW_EVERY=$(cfg review_every 5)
 ON_LIMIT=$(cfg on_limit wait)
 MAX_LIMIT_RETRIES=$(cfg max_usage_retries 20)
 PLAN_PATH=$(cfg plan_path "$PROJECT/plan.md")
+
+# config.json is written by an LLM and lives in a directory the agent can no
+# longer reach but a human still edits by hand, so its values are not trusted to
+# be numeric. A non-numeric integer silently DISABLED a cap: `[ "$N" -ge
+# "twelve" ]` errors "integer expression expected" and evaluates false, so the
+# session cap, the stall/fastfail limits and the total-budget awk all failed
+# open — an unbounded, uncapped overnight run. A non-numeric value in a `$(( ))`
+# is worse: `set -u` makes it a fatal "unbound variable", exit 127 mid-loop,
+# breaking the 0/20-29/78 exit contract. Refuse at preflight instead of doing
+# either. (window_* already gets this treatment above; this covers the rest.)
+_relay_bad_num=""
+for _nv in "max_sessions=$MAX_SESSIONS" "session_timeout_secs=$SESSION_TIMEOUT" \
+           "stall_limit=$STALL_LIMIT" "fastfail_limit=$FASTFAIL_LIMIT" \
+           "min_session_secs=$MIN_SESSION_SECS" "max_fable_sessions=$MAX_FABLE" \
+           "max_timeouts=$MAX_TIMEOUTS" "review_every=$REVIEW_EVERY" \
+           "max_usage_retries=$MAX_LIMIT_RETRIES"; do
+  case "${_nv#*=}" in ''|*[!0-9]*) _relay_bad_num="$_relay_bad_num ${_nv%%=*}" ;; esac
+done
+for _fv in "budget_usd_per_session=$BUDGET_PER_SESSION" "budget_usd_total=$BUDGET_TOTAL"; do
+  case "${_fv#*=}" in
+    ''|*[!0-9.]*|*.*.*|.|*.) _relay_bad_num="$_relay_bad_num ${_fv%%=*}" ;;
+  esac
+done
+if [ -n "$_relay_bad_num" ]; then
+  relay_journal "config.non-numeric" "$_relay_bad_num"
+  printf 'relay: these config.json values must be numbers:%s\n' "$_relay_bad_num" >&2
+  printf 'relay: refusing to run rather than silently disable a cap or crash mid-loop.\n' >&2
+  exit "$EX_PREFLIGHT"
+fi
+unset _relay_bad_num _nv _fv
 # The acceptance command is an argv ARRAY, never a shell string: if a shell is
 # wanted the user writes ["bash","-lc",...] and sees it at approval time. The
 # shape is enforced here rather than assumed — a string like "npm test" would
@@ -456,9 +486,18 @@ usage_limited() { # 1=session stdout log  2=session stderr log
   if [ "$(jq -rs "$LIMIT_JQ"' | has("type")' < "$1" 2>/dev/null)" = "true" ]; then
     [ "$(jq -rs "$LIMIT_JQ"' | (.api_error_status // "") | tostring' < "$1" 2>/dev/null)" = "429" ] && return 0
     [ "$(jq -rs "$LIMIT_JQ"' | (.is_error // false) | tostring' < "$1" 2>/dev/null)" = "true" ] || return 1
-    jq -rs "$LIMIT_JQ"' | [(.subtype // ""), (.result // ""), (.stop_reason // ""),
-                           (.terminal_reason // "")] | join(" ")' < "$1" 2>/dev/null \
-      | head -c 8192 | grep -qiE "$LIMIT_RE" && return 0
+    # Capture the joined envelope fields to a variable, THEN match — never
+    # `jq | head -c N | grep -q`. Under `set -o pipefail` that pipeline can miss
+    # a real limit: on a long `result`, `head`/`grep -q` close the pipe early,
+    # jq dies on EPIPE (non-zero), the whole pipeline is non-zero, and the
+    # trailing `&& return 0` never fires — so a genuine 429 gets counted as an
+    # ordinary failed session and advances the stall/fastfail counters. jq is
+    # given the cap so the variable can never be unbounded.
+    _lim_txt=$(jq -rs "$LIMIT_JQ"' | [(.subtype // ""), (.result[0:8192] // ""),
+                           (.stop_reason // ""), (.terminal_reason // "")]
+                           | join(" ")' < "$1" 2>/dev/null)
+    case "$_lim_txt" in *[!\ ]*) : ;; *) return 1 ;; esac
+    printf '%s' "$_lim_txt" | grep -qiE "$LIMIT_RE" && return 0
     return 1
   fi
   grep -qiE "$LIMIT_RE" "$2" 2>/dev/null && return 0
@@ -825,10 +864,27 @@ while :; do
     [ "$_wait" -gt "$BACKOFF_MAX" ] && _wait="$BACKOFF_MAX"
     relay_journal "usage_limit.backoff" "wait=${_wait}s retry=$LIMIT_RETRIES"
     [ "$LIMIT_RETRIES" -eq 1 ] && relay_notify "relay: usage limit" "waiting, will resume automatically"
+    # Put the operator note back. It was consumed into inbox-current.md at the
+    # top of this iteration, but a usage-limited session did nothing with it —
+    # and the next iteration's consume step would truncate inbox-current.md,
+    # silently destroying the one steering instruction the user sent. Prepend it
+    # to INBOX.md so the next real session sees it.
+    if [ -s "$STATE/run/inbox-current.md" ]; then
+      cat "$STATE/run/inbox-current.md" "$STATE/INBOX.md" > "$STATE/INBOX.md.tmp" 2>/dev/null \
+        && mv -f "$STATE/INBOX.md.tmp" "$STATE/INBOX.md"
+      : > "$STATE/run/inbox-current.md"
+      relay_journal "inbox.preserved-on-retry" ""
+    fi
     _slept=0
+    _step=5
+    # Cap the sleep step at the remaining wait so a sub-5s backoff (test knobs,
+    # or a first short retry) is not rounded up to 5s and the STOP file is polled
+    # promptly rather than only every 5 seconds.
+    [ "$_wait" -lt "$_step" ] && _step="$_wait"
+    [ "$_step" -lt 1 ] && _step=1
     while [ "$_slept" -lt "$_wait" ]; do
       [ -f "$STATE/STOP" ] && break
-      sleep 5; _slept=$((_slept + 5))
+      sleep "$_step"; _slept=$((_slept + _step))
     done
     N=$((N - 1))
     [ "$TIER" = "fable" ] && FABLE_USED=$((FABLE_USED - 1))
@@ -871,6 +927,14 @@ while :; do
   fi
 
   # Commit anything the session left behind, through the filtered path.
+  #   rc 0 = committed (or nothing to commit)
+  #   rc 1 = a secret was detected: halt, BLOCKED.md already written
+  #   rc 2 = an operational failure (unmerged paths, git add/commit failed, an
+  #          unstageable pathspec). This used to be ignored: PRODUCTIVE was then
+  #          computed from a HEAD that never moved, real work sat uncommitted,
+  #          and the run drifted to EX_STALLED with nothing explaining why. Now
+  #          it is journaled so the failure is legible, and left to the normal
+  #          productivity/stall path to act on.
   relay_git_commit "$PROJECT" "relay: session $N (auto)" "$WORK"
   _commit_rc=$?
   if [ "$_commit_rc" -eq 1 ]; then
@@ -878,6 +942,8 @@ while :; do
     relay_notify "relay: blocked" "possible credential in staged changes"
     state_set status "blocked" reason "secret-detected"
     relay_unlock; exit "$EX_BLOCKED"
+  elif [ "$_commit_rc" -eq 2 ]; then
+    relay_journal "commit.failed" "n=$N rc=2 (unmerged/add/commit failed; work left uncommitted)"
   fi
   NEW_HEAD=$( cd "$PROJECT" && relay_git rev-parse HEAD 2>/dev/null )
 

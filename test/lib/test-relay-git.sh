@@ -158,6 +158,47 @@ relay_git_preflight "$R" 2>/dev/null
 if [ "$?" -ne 0 ]; then ok "preflight:detects-fsmonitor"; else bad "preflight:detects-fsmonitor"; fi
 relay_git config --local --unset core.fsmonitor
 
+# --literal-pathspecs: an untracked file named `*` must stage ONLY itself, never
+# the whole repo. Without it, `git add` treats the collected filename as a glob
+# and stages .env/keys the name filter just rejected. (SBX-3)
+R=$(newrepo repo_glob); cd "$R" || exit 1
+printf 'SECRET=shouldnotbestaged\n' > .env
+printf 'literal star file\n' > '*'
+relay_git_commit "$R" "test: literal pathspec" "" >/dev/null 2>&1
+if relay_git ls-files --error-unmatch .env >/dev/null 2>&1; then
+  bad "commit:glob-filename-did-not-stage-env" "a file named '*' staged .env"
+else
+  ok "commit:glob-filename-did-not-stage-env"
+fi
+
+# A secret hidden behind a hostile .gitattributes `-diff` must still be caught:
+# the scan diffs with --text --no-textconv, not "Binary files differ". (SBX-4)
+R=$(newrepo repo_attr); cd "$R" || exit 1
+printf '* -diff\n' > .gitattributes
+relay_git add .gitattributes >/dev/null 2>&1
+relay_git commit -q -m attrs >/dev/null 2>&1
+printf 'aws_key = AKIAIOSFODNN7EXAMPLE
+' > appconfig.js
+relay_git_commit "$R" "test: attr-hidden secret" "$SB" >/dev/null 2>&1
+_rc=$?
+[ "$_rc" -eq 1 ] && ok "commit:gitattributes-diff-secret-caught" \
+  || bad "commit:gitattributes-diff-secret-caught" "scan missed a secret behind -diff (rc=$_rc)"
+
+# An unmerged tree must return rc 2, not a silent 0. The supervisor journals
+# commit.failed on rc 2; before that, rc 2 was ignored and real work sat
+# uncommitted while the run drifted to EX_STALLED with no diagnostic. (CF-4)
+R=$(newrepo repo_conflict); cd "$R" || exit 1
+relay_git checkout -q -b other 2>/dev/null
+printf 'branch-other\n' > README.md
+relay_git commit -aq -m other >/dev/null 2>&1
+relay_git checkout -q main 2>/dev/null || relay_git checkout -q master 2>/dev/null
+printf 'branch-main\n' > README.md
+relay_git commit -aq -m main >/dev/null 2>&1
+relay_git merge other >/dev/null 2>&1   # conflicts, leaves unmerged paths
+relay_git_commit "$R" "test: unmerged" "" >/dev/null 2>&1
+[ "$?" -eq 2 ] && ok "commit:unmerged-returns-2" \
+  || bad "commit:unmerged-returns-2" "unmerged tree did not return rc 2"
+
 # A repo hook must NOT run during relay's own commit.
 R=$(newrepo repo5); cd "$R" || exit 1
 mkdir -p "$R/.git/hooks"

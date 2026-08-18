@@ -288,12 +288,22 @@ relay_git_commit() {
     return 0   # nothing to commit
   fi
 
-  # Scan what is actually about to enter history. --text and --no-textconv force
-  # a content diff even for paths a hostile .gitattributes marks `-diff`/`binary`
-  # (which otherwise prints only "Binary files differ" and hides the secret);
-  # core.attributesFile=/dev/null neutralises a hostile global attributes file.
-  _diff="$_gdir/staged.diff"
-  relay_git -c core.attributesFile=/dev/null diff --cached --text --no-textconv > "$_diff" 2>/dev/null
+  # Scan what is actually about to enter history — by reading each staged blob's
+  # raw content with `git cat-file`, NOT `git diff`. A hostile in-tree
+  # `.gitattributes` marking a path `-diff`/`binary` makes `git diff --cached`
+  # emit nothing at all for it (not even "Binary files differ"), and neither
+  # --text nor core.attributesFile=/dev/null overrides an in-tree attributes
+  # file — so a diff-based scan is blind to exactly the file an attacker would
+  # hide a credential in. `cat-file blob :0:<path>` returns the stored bytes
+  # regardless of any diff attribute, which is what actually gets committed.
+  _diff="$_gdir/staged.blob"
+  : > "$_diff"
+  relay_git diff --cached --name-only -z --diff-filter=ACMR 2>/dev/null \
+    | while IFS= read -r -d '' _p; do
+        printf '### %s\n' "$_p" >> "$_diff"
+        relay_git cat-file blob ":0:$_p" >> "$_diff" 2>/dev/null
+        printf '\n' >> "$_diff"
+      done
   _report=$(relay_git_scan_text "$_diff")
   _scan_rc=$?
   rm -rf "$_gdir"
