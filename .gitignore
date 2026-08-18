@@ -15,3 +15,13 @@ src/step*.txt
 # this line one of those gets auto-committed. `test/run.sh` itself keeps its
 # state inside a mktemp sandbox and does not create this.
 /state/
+
+# Repo .gitignore outranks the user's global excludesFile, so these negations
+# protect test files whose NAMES trip common personal ignore rules. This is not
+# hypothetical: a global `*secret*` rule silently kept
+# test/cases/c133_secret_blocks_commit.sh — the test proving relay refuses to
+# commit a credential — out of the published repository entirely. A security
+# test that vanishes on the maintainer's own machine is worse than no test.
+!test/cases/*secret*
+!test/cases/*credential*
+!test/**/*secret*
