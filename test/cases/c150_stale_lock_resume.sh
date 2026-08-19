@@ -58,6 +58,20 @@ while [ ! -f "$STATE/locks/run.d/owner" ] && [ "$i" -le 30 ]; do
 done
 assert_file "$STATE/locks/run.d/owner" "c150_setup_supervisor1_acquired_lock"
 
+# Crash supervisor1 mid-SESSION, not merely mid-startup. Waiting only on the
+# lock file left that to chance: the lock is taken well before the first
+# `claude` call, so a slow host killed supervisor1 having invoked the mock zero
+# times while a fast one killed it having invoked it once. Both outcomes are a
+# legitimate crash, but they are not the same test, and only one of them was
+# ever asserted. Wait for the invocation so the crash always lands inside a
+# running session — the case the lock is actually there to survive.
+i=0
+while [ ! -f "$RELAY_MOCK_DIR/invocation_count" ] && [ "$i" -le 60 ]; do
+  i=$((i + 1))
+  sleep 0.3
+done
+assert_file "$RELAY_MOCK_DIR/invocation_count" "c150_setup_supervisor1_ran_a_session"
+
 kill -9 "$PID1" 2>/dev/null
 i=0
 while kill -0 "$PID1" 2>/dev/null && [ "$i" -le 20 ]; do
@@ -65,6 +79,16 @@ while kill -0 "$PID1" 2>/dev/null && [ "$i" -le 20 ]; do
   sleep 0.3
 done
 wait "$PID1" 2>/dev/null
+
+# The mock picks its behaviour by INVOCATION INDEX, and that counter is a file
+# in $RELAY_MOCK_DIR shared by the whole sandbox — it outlives the kill -9.
+# Supervisor2 carries its own RELAY_MOCK_SCRIPT and must read it from the
+# start; leaving the counter at 1 makes "work,complete" begin at "complete", so
+# no commit is ever made, verify_complete rejects three times and the run exits
+# 27 (repeated-false-complete) instead of 0. That is precisely how this test
+# failed on ubuntu-latest while passing on macOS. The counter is harness state,
+# never product state, so resetting it changes nothing under test.
+rm -f "$RELAY_MOCK_DIR/invocation_count"
 
 mkconsent "$STATE"
 RELAY_MOCK_SCRIPT="work,complete" bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/out2.log" 2>"$PWD/err2.log"
