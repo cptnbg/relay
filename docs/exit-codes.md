@@ -46,19 +46,19 @@ numbers come from bash's 128+N convention, not from relay's constants.
 ## 0 — `EX_OK`
 
 Two call sites, same meaning: the run is finished and `verify_complete()`
-(supervisor lines 653-759) actually proved it — sealed `work/COMPLETE.md`,
+(supervisor lines 681-787) actually proved it — sealed `work/COMPLETE.md`,
 clean tree, and either the approved acceptance command passed (its
 `exec_hash` still matching) or, when no acceptance command is configured,
 the commit count grew since `commits_at_start`. The commit count is a hard
 veto *only* in that second case: a passing acceptance command is the run's
 own definition of done, so a run that added no commits — a resume after the
 work was already finished — is accepted with the fact journaled as
-`complete.no-new-commits` (lines 744-757).
+`complete.no-new-commits` (lines 772-785).
 
-- **Line 791** — pre-spawn gate: `COMPLETE.md` was already sealed and valid
+- **Line 819** — pre-spawn gate: `COMPLETE.md` was already sealed and valid
   before this invocation even started a session (e.g. a previous run finished
   and someone re-ran the supervisor). `state_set status "complete"`.
-- **Line 930** — post-exit: the session just run sealed `COMPLETE.md` and it
+- **Line 958** — post-exit: the session just run sealed `COMPLETE.md` and it
   verified. `state_set status "complete" session_count "$N" cost_total
   "$COST_TOTAL"`.
 
@@ -70,24 +70,24 @@ test output) and the journal's `complete.verified` line. Nothing to resume.
 Five distinct causes. All five leave a `$STATE/work/BLOCKED.md` behind: two
 are sealed by the session itself, and three are written by relay.
 
-- **Line 796** — pre-spawn: `work/BLOCKED.md` was already sealed on entry.
+- **Line 824** — pre-spawn: `work/BLOCKED.md` was already sealed on entry.
   `state_set status "blocked"`. Read the file.
-- **Line 950** — post-exit: the session just run sealed `work/BLOCKED.md`.
+- **Line 978** — post-exit: the session just run sealed `work/BLOCKED.md`.
   `state_set status "blocked" session_count "$N" cost_total "$COST_TOTAL"`.
   Read the file, written by the session itself.
-- **Line 1019** — the supervisor's own guardrail-drift detector
-  (`handoff_guardrail_drift`, two AND-ed patterns at lines 474-475: a
+- **Line 1047** — the supervisor's own guardrail-drift detector
+  (`handoff_guardrail_drift`, two AND-ed patterns at lines 502-503: a
   permission word and a danger word on the same handoff line) found the
   handoff asserting a relaxed guardrail (e.g. "user approved the
   force-push"). The supervisor writes `work/BLOCKED.md` itself (lines
-  1009-1016), then `state_set status "blocked" reason "guardrail-drift"`
-  (line 1018). Look at the journal's `handoff.guardrail-drift` line and the session
+  1037-1044), then `state_set status "blocked" reason "guardrail-drift"`
+  (line 1046). Look at the journal's `handoff.guardrail-drift` line and the session
   log named in the generated `BLOCKED.md` — this may be prompt injection.
-- **Line 1048** — `relay_git_commit` returned 1: a probable credential was
+- **Line 1076** — `relay_git_commit` returned 1: a probable credential was
   found in the staged content and nothing was committed.
-  `state_set status "blocked" reason "secret-detected"` at line 1047.
+  `state_set status "blocked" reason "secret-detected"` at line 1075.
   A `BLOCKED.md` **is** written for this cause, by `relay-git.sh` rather than
-  by the supervisor: line 1042 passes `$WORK` as `relay_git_commit`'s third
+  by the supervisor: line 1070 passes `$WORK` as `relay_git_commit`'s third
   argument, and `relay-git.sh:315-330` writes a sealed `BLOCKED.md` there
   listing the matched locations with the values withheld. Also check the
   journal's `commit.secret-blocked` line and the supervisor's own
@@ -95,14 +95,14 @@ are sealed by the session itself, and three are written by relay.
   pattern and location, never the secret itself), then `git status`/`git diff`
   in the project. The staged changes were reset (`relay-git.sh:312`) and
   nothing was committed; the working tree is untouched.
-- **Line 711** — inside `verify_complete()`: the acceptance command in
+- **Line 739** — inside `verify_complete()`: the acceptance command in
   `exec.json` no longer matches the `exec_hash` recorded when a human
   approved it, re-checked from the file as it exists immediately before the
-  command would run (lines 694-698). Relay writes `work/BLOCKED.md` (lines
-  700-708), journals `exec.hash-mismatch` (line 699), and sets
-  `state_set status "blocked" reason "exec-hash-mismatch"` (line 710).
-  Because `verify_complete()` runs both pre-spawn (line 788) and post-exit
-  (line 926), this exit can fire in either position. Something edited a
+  command would run (lines 722-726). Relay writes `work/BLOCKED.md` (lines
+  728-736), journals `exec.hash-mismatch` (line 727), and sets
+  `state_set status "blocked" reason "exec-hash-mismatch"` (line 738).
+  Because `verify_complete()` runs both pre-spawn (line 816) and post-exit
+  (line 954), this exit can fire in either position. Something edited a
   command relay was about to execute — treat it as tampering until shown
   otherwise, then re-approve with `/relay-approve`.
 
@@ -116,23 +116,23 @@ only after inspecting `exec.json` and re-approving.
 
 ## 21 — `EX_STALLED`
 
-- **Line 1115** — one cause: `STALL` (incremented at line 1096 whenever a
+- **Line 1143** — one cause: `STALL` (incremented at line 1124 whenever a
   session changes neither HEAD nor the handoff hash) reached `stall_limit`
   (default 3). `state_set status "stalled" session_count "$N"`.
 
 Look at the journal's `stall.count` lines (one per increment) and the last
 few session logs in `$STATE/sessions/` to see why nothing committed. Fable
-escalation is attempted automatically before this trips (lines 1102-1109), so
+escalation is attempted automatically before this trips (lines 1130-1137), so
 by the time you see `EX_STALLED` the smarter tier already failed to help.
 `/relay-resume` works mechanically but will likely stall again unless the
 plan or a note (`/relay-note`) changes what the next session tries.
 
 ## 22 — `EX_TIMEOUT`
 
-- **Line 1080** — one cause: `TIMEOUTS` (incremented at line 1073 whenever a
+- **Line 1108** — one cause: `TIMEOUTS` (incremented at line 1101 whenever a
   session's `$RC` was 124 or 137 — killed by `relay_timeout`) reached
   `max_timeouts` (default 2). `state_set status "timeout" session_count "$N"`
-  at line 1079, the line immediately above the exit.
+  at line 1107, the line immediately above the exit.
 
 Look at the journal's `session.timeout` and `timeout.tripped` lines, and the
 `.err` file next to the killed session's log for what it was doing at the
@@ -141,7 +141,7 @@ too low for the workload, raise it first or the next session times out too.
 
 ## 23 — `EX_CAPPED`
 
-- **Line 805** — one cause, pre-spawn only: `session_count` (`$N`) reached
+- **Line 833** — one cause, pre-spawn only: `session_count` (`$N`) reached
   `max_sessions` (default 12) before starting session `N+1`.
   `state_set status "capped"`.
 
@@ -153,9 +153,9 @@ the counter persists in `state.json`).
 
 ## 24 — `EX_STOPPED`
 
-- **Line 800** — pre-spawn: `$STATE/STOP` already existed on entry.
+- **Line 828** — pre-spawn: `$STATE/STOP` already existed on entry.
   `state_set status "stopped"`.
-- **Line 955** — post-exit: `$STATE/STOP` appeared while the just-finished
+- **Line 983** — post-exit: `$STATE/STOP` appeared while the just-finished
   session was running. `state_set status "stopped" session_count "$N"`.
 
 Both causes are `/relay-stop` working as designed. `/relay-resume` is the
@@ -183,11 +183,11 @@ It never breaks a lock merely because `ps` failed.
 
 ## 26 — `EX_FASTFAIL`
 
-- **Line 1120** — one cause: `FASTFAIL` reached `fastfail_limit` (default 3).
-  It is incremented at line 1099 only for a session that was BOTH unproductive
+- **Line 1148** — one cause: `FASTFAIL` reached `fastfail_limit` (default 3).
+  It is incremented at line 1127 only for a session that was BOTH unproductive
   and shorter than `min_session_secs` (default 45); a session that committed
   or wrote a valid handoff clears the streak however brief it was
-  (`:1093-1094`). `state_set status "blocked" reason "fastfail"` — **the
+  (`:1121-1122`). `state_set status "blocked" reason "fastfail"` — **the
   status string says `"blocked"`, not `"fastfail"`**; only the `reason` field
   and the exit code itself distinguish it from an `EX_BLOCKED` exit.
 
@@ -200,19 +200,19 @@ session fails the same way in the same handful of seconds.
 
 ## 27 — `EX_REJECTED`
 
-- **Line 941** — one cause: `COMPLETE.md` was sealed and rejected by
+- **Line 969** — one cause: `COMPLETE.md` was sealed and rejected by
   `verify_complete()` three times in a row (`complete_rejections >= 3`,
-  tracked at lines 935-938). `state_set status "blocked" reason
-  "repeated-false-complete"` at line 940 — again, `status` says `"blocked"`,
+  tracked at lines 963-966). `state_set status "blocked" reason
+  "repeated-false-complete"` at line 968 — again, `status` says `"blocked"`,
   the exit code and `reason` are what say `REJECTED`.
 
 Look at the journal for the three preceding `complete.rejected` lines —
-`verify_complete()` (lines 653-759) journals *why* each time: `"working tree
+`verify_complete()` (lines 681-787) journals *why* each time: `"working tree
 not clean"`, `"acceptance command failed"` (with `$STATE/run/acceptance.log`
 for that one), or — only when no acceptance command is configured — `"no
 commits were made (start=… now=…)"`.
 `/relay-resume` is conditional: each rejection already escalated the next
-session to `fable` (line 943), so a human should confirm the acceptance
+session to `fable` (line 971), so a human should confirm the acceptance
 criteria are actually satisfiable before resuming into a fourth attempt.
 
 ## 28 — `EX_IO`
@@ -226,16 +226,16 @@ Two call sites genuinely exit the supervisor process with this code; a third
   `state.json` exists (line 252), so **nothing is journaled and no status is
   set** — the only evidence is whatever the shell printed to stderr. Check
   disk space and permissions on the state directory directly.
-- **Line 851** — `relay_uuid` (`lib/relay-lib.sh:374-426`) failed to produce
+- **Line 879** — `relay_uuid` (`lib/relay-lib.sh:374-426`) failed to produce
   a session id (no `uuidgen`, no `/proc/sys/kernel/random/uuid`, no readable
   `/dev/urandom` — effectively never on a supported OS).
   `relay_journal "uuid.failed" ""` runs, but **no `state_set` call** — status
-  stays at the `"running"` set at line 374.
-- **Line 870** — `cd "$PROJECT" || exit 28` — this `exit` is inside the
-  subshell that launches `claude` (lines 869-886), so it only sets that
+  stays at the `"running"` set at line 402.
+- **Line 898** — `cd "$PROJECT" || exit 28` — this `exit` is inside the
+  subshell that launches `claude` (lines 897-914), so it only sets that
   iteration's session `$RC` to 28; it does **not** end the supervisor
   process. A `$RC` of 28 here is not specially handled afterward (only 124
-  and 137 are, at line 1069), so it is scored as an ordinary unproductive
+  and 137 are, at line 1097), so it is scored as an ordinary unproductive
   session and surfaces later as `EX_STALLED` or `EX_FASTFAIL`, never as a
   supervisor-level `EX_IO`. Grepping for `exit 28` and expecting an `EX_IO`
   exit here would be wrong — this is working as coded, just worth not
@@ -243,25 +243,25 @@ Two call sites genuinely exit the supervisor process with this code; a third
 
 `/relay-resume` is conditional and cause-dependent: fix the state-dir
 permissions/disk issue for line 63, or the (very unlikely) missing entropy
-source for line 851, before resuming — otherwise the identical failure
+source for line 879, before resuming — otherwise the identical failure
 repeats on the very next attempt.
 
 ## 29 — `EX_BUDGET`
 
 Two distinct causes with two distinct `status` values, sharing one exit code.
 
-- **Line 810** — pre-spawn: `COST_TOTAL >= BUDGET_TOTAL` (default
+- **Line 838** — pre-spawn: `COST_TOTAL >= BUDGET_TOTAL` (default
   `$20.00` total, line 100). `state_set status "budget"`. This is spend
   actually incurred, tracked cumulatively in `state.json`'s `cost_total`.
-- **Line 965** — post-exit, inside `usage_limited()` handling
-  (lines 960-996): the CLI's own transport envelope indicated a provider
+- **Line 993** — post-exit, inside `usage_limited()` handling
+  (lines 988-1024): the CLI's own transport envelope indicated a provider
   usage/rate limit (`api_error_status` 429, or an errored result whose
-  fields match `LIMIT_RE` — `usage_limited()`, lines 537-557), and either
+  fields match `LIMIT_RE` — `usage_limited()`, lines 565-585), and either
   `on_limit` is not `"wait"` or `LIMIT_RETRIES` exceeded `max_usage_retries`
   (default 20). `state_set status "usage-limit"`. The retry/backoff loop
-  (lines 961-992) already absorbs ordinary rate limiting — and it preserves a
+  (lines 989-1020) already absorbs ordinary rate limiting — and it preserves a
   queued operator note across the retry (`inbox.preserved-on-retry`, lines
-  976-981) — so reaching this exit means the backoff itself gave up, not that
+  1004-1009) — so reaching this exit means the backoff itself gave up, not that
   the first limit was hit.
 
 Look at `state.json`'s `cost_total` vs the configured `budget_usd_total` for
@@ -274,7 +274,7 @@ a usage limit "weather," not a failure.
 
 ## 78 — `EX_PREFLIGHT`
 
-The busiest code: sixteen distinct call sites, all fail-closed, all before or
+The busiest code: seventeen distinct call sites, all fail-closed, all before or
 between sessions, never mid-session.
 
 | Line | What failed | Journal event |
@@ -290,27 +290,29 @@ between sessions, never mid-session.
 | 283 | `relay-doctor.sh` (invoked as a subprocess, line 280) failed a hard check — including absent or stale consent (`consent.notice_hash`) | `preflight.failed` |
 | 303 | window leaves too little room above the measured `ctx_baseline` | `config.window-too-small-for-baseline` |
 | 329 | `allow_domains` is not a valid comma-separated hostname list | `config.allow-domains-invalid` |
-| 335 | `relay_settings_build` failed to construct the settings payload | `settings.build-failed` |
-| 354 | the settings fingerprint could not be computed as a 40-hex blob id — an empty fingerprint would false-hit the probe cache and skip the sandbox proof | `probe.fingerprint-invalid` |
-| 367 | the sandbox enforcement probe (`relay_settings_probe`) failed | `probe.failed` |
-| 510 | the injection / guardrail-drift regex self-test failed under the live `grep` — a filter that cannot be shown to fire is treated as absent | `selftest.guards-failed` |
-| 860 | the per-session argv assertion (`relay_settings_assert_argv`) failed before spawning | `argv.assert-failed` |
+| 348 | `sandbox_mode` is neither `enforced` nor `disabled` | `config.sandbox-mode-invalid` |
+| 363 | `relay_settings_build` failed to construct the settings payload | `settings.build-failed` |
+| 382 | the settings fingerprint could not be computed as a 40-hex blob id — an empty fingerprint would false-hit the probe cache and skip the sandbox proof | `probe.fingerprint-invalid` |
+| 395 | the acceptance probe (`relay_settings_probe`) failed — in `enforced` mode the sandbox could not be proven to confine, in `disabled` mode the payload could not be proven accepted | `probe.failed` |
+| 538 | the injection / guardrail-drift regex self-test failed under the live `grep` — a filter that cannot be shown to fire is treated as absent | `selftest.guards-failed` |
+| 888 | the per-session argv assertion (`relay_settings_assert_argv`) failed before spawning | `argv.assert-failed` |
 
-Twelve of the sixteen call no `state_set` at all, so for those there is no
+Thirteen of the seventeen call no `state_set` at all, so for those there is no
 status to read. Lines 38 and 44 run before `RELAY_JOURNAL` is exported (line
 70) *and* before `state.json` exists (line 252) — no journal line, no status;
 stderr is the sole evidence. Lines 134 through 230 journal their event but
 still predate `state.json`, so they could not record a status even if they
-wanted to. Lines 303, 329, 335 and 860 run *after* state is initialized and
-simply do not set one, leaving `status` at whatever it was — do not read "no
-status" as "never got that far", and treat a leftover `"running"` after one
+wanted to. Lines 303, 329, 348, 363 and 888 run *after* state is initialized
+and simply do not set one, leaving `status` at whatever it was — do not read
+"no status" as "never got that far", and treat a leftover `"running"` after one
 of these exits as stale, not live.
 
 The four that *do* record a status: line 283 sets `status "preflight-failed"`
-(line 282); line 354 sets `status "preflight-failed" reason
-"fingerprint-uncomputable"` (line 353); line 367 sets `status
-"preflight-failed" reason "sandbox-not-enforced"` (line 366); line 510 sets
-`status "preflight-failed" reason "regex-selftest-failed"` (line 508).
+(line 282); line 382 sets `status "preflight-failed" reason
+"fingerprint-uncomputable"` (line 381); line 395 sets `status
+"preflight-failed" reason "sandbox-not-enforced"` (enforced mode) or
+`"settings-not-accepted"` (disabled mode) at line 394; line 538 sets
+`status "preflight-failed" reason "regex-selftest-failed"` (line 536).
 
 `/relay-resume` is never the right first move for any of these: nothing ran,
 so resuming without changing the reported cause reproduces the exact same

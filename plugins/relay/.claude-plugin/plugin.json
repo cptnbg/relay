@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "relay",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Run a long multi-phase build to completion across automatically chained Claude Code sessions, refreshing context before quality degrades.",
   "author": {
     "name": "Boris Griggs",

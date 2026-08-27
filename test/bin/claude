@@ -163,6 +163,14 @@ fi
 #       egress-open  — read denied, but the curl got a real HTTP status
 #                      (network escape; relay must refuse to run)
 #       inconclusive — read denied, egress file never written
+#     The disabled (full-trust) probe sets RELAY_SESSION_ID + RELAY_DIR so the
+#     inline hook can fire; the mock simulates that marker from RELAY_DIR:
+#       open         — canary readable + egress open + hook.alive written
+#                      (healthy full-trust: payload accepted, sandbox off)
+#       dropped      — canary readable + egress open but NO hook.alive
+#                      (payload silently ignored; relay must refuse to run)
+#       confined     — read denied but hook.alive written
+#                      (enabled:false not honoured; relay must refuse to run)
 #     Probe invocations do NOT consume a RELAY_MOCK_SCRIPT behaviour and do
 #     not touch the invocation counter: the probe is preflight, not a session.
 # ---------------------------------------------------------------------------
@@ -194,6 +202,29 @@ case "$prompt_text" in
         ;;
       inconclusive)
         printf 'cat: %s: Operation not permitted\n' "$probe_canary" > "$probe_readproof"
+        ;;
+      open)
+        # Full-trust, healthy: read succeeds, egress open, hook fires.
+        cat "$probe_canary" > "$probe_readproof" 2>/dev/null
+        [ -n "$probe_netfile" ] && printf 'code=200\nrc=0\n' > "$probe_netfile"
+        if [ -n "${RELAY_DIR:-}" ]; then
+          mkdir -p "$RELAY_DIR/run" 2>/dev/null
+          : > "$RELAY_DIR/run/hook.alive"
+        fi
+        ;;
+      dropped)
+        # Payload silently ignored: reads/egress open (no sandbox) but the hook
+        # was never registered, so no marker appears.
+        cat "$probe_canary" > "$probe_readproof" 2>/dev/null
+        [ -n "$probe_netfile" ] && printf 'code=200\nrc=0\n' > "$probe_netfile"
+        ;;
+      confined)
+        # enabled:false not honoured: read still denied though the hook fired.
+        printf 'cat: %s: Operation not permitted\n' "$probe_canary" > "$probe_readproof"
+        if [ -n "${RELAY_DIR:-}" ]; then
+          mkdir -p "$RELAY_DIR/run" 2>/dev/null
+          : > "$RELAY_DIR/run/hook.alive"
+        fi
         ;;
       *)
         printf 'MOCK-FATAL: unknown RELAY_MOCK_PROBE mode: %s\n' "$probe_mode" >&2

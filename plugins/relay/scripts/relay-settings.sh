@@ -177,7 +177,60 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# relay_settings_build <project_dir> <work_dir> <hook_path> [extra_domains_csv]
+# relay_settings_deny_for_mode <mode> <state_root>
+# THE permission deny list, chosen by sandbox_mode. This is the ONLY place the
+# trust-mode deny posture is decided — change it here and nowhere else.
+#
+#   enforced  the full default deny list plus the write-persistence guards,
+#             emitted in exactly the order relay has always emitted them. The
+#             sandbox is the real boundary; this is blast-radius reduction.
+#   disabled  full-trust: there is NO sandbox, so operational commands (ssh,
+#             curl, gh, docker, cloud CLIs, sudo) are all allowed. Only two
+#             classes stay denied, and NEITHER is a boundary once the sandbox is
+#             off — a session can `cat` or `>>` any readable path through Bash:
+#               * git push / git remote — commitment #2, relay never pushes;
+#               * Write/Edit-tool writes to ~/.claude, ~/.ssh, ~/.aws, shell rc
+#                 files, and relay's own state files — free footgun guards that
+#                 cost no operational capability (Bash bypasses them; the docs
+#                 say so plainly).
+# ---------------------------------------------------------------------------
+relay_settings_deny_for_mode() {
+  _dfm_mode="${1:-enforced}"
+  _dfm_state="${2:-}"
+  if [ "$_dfm_mode" = "disabled" ]; then
+    cat <<'EOF'
+Bash(git push:*)
+Bash(git remote:*)
+EOF
+    relay_settings_default_deny_writes
+    if [ -n "$_dfm_state" ]; then
+      cat <<EOF
+Write($_dfm_state/state.json)
+Edit($_dfm_state/state.json)
+Write($_dfm_state/config.json)
+Edit($_dfm_state/config.json)
+Write($_dfm_state/exec.json)
+Edit($_dfm_state/exec.json)
+Write($_dfm_state/journal.log)
+Edit($_dfm_state/journal.log)
+Write($_dfm_state/INBOX.md)
+Edit($_dfm_state/INBOX.md)
+Write($_dfm_state/locks/**)
+Write($_dfm_state/priv/**)
+Write($_dfm_state/run/**)
+Write($_dfm_state/sessions/**)
+Write($_dfm_state/handoffs/**)
+EOF
+    fi
+  else
+    relay_settings_default_deny
+    relay_settings_default_deny_writes
+  fi
+  unset _dfm_mode _dfm_state
+}
+
+# ---------------------------------------------------------------------------
+# relay_settings_build <project_dir> <work_dir> <hook_path> [extra_domains_csv] [sandbox_mode]
 # Emits the complete inline --settings JSON on stdout.
 #
 # The second argument is the session-WRITABLE work dir ($STATE/work), NOT the
@@ -191,6 +244,22 @@ relay_settings_build() {
   _work="${2:?work dir required}"
   _hook="${3:?hook path required}"
   _extra_domains="${4:-}"
+  # enforced (default) is byte-for-byte what relay has always emitted. disabled
+  # turns the OS sandbox fully off (full-trust opt-in). An unknown value is a
+  # build failure, surfaced as EX_PREFLIGHT by the supervisor's braces — the
+  # supervisor also validates the value first, this is the second line.
+  _mode="${5:-enforced}"
+  case "$_mode" in
+    enforced|disabled) : ;;
+    *) return 1 ;;
+  esac
+  # $_work is $STATE/work; its parent is the supervisor-only state root. Derived
+  # by parameter expansion (fork-free, no dirname dependency). A $_work with no
+  # slash in it has no parent to name, and `%/*` would return it unchanged —
+  # which would aim the state-file deny rules at the work dir itself. Emit no
+  # state rules at all rather than confidently wrong ones.
+  _state_root="${_work%/*}"
+  [ "$_state_root" = "$_work" ] && _state_root=""
 
   # api.anthropic.com is required or the session cannot talk to the API at all.
   #
@@ -212,14 +281,20 @@ relay_settings_build() {
     --arg work "$_work" \
     --arg hook "$_hook" \
     --arg tmp "${TMPDIR:-/tmp}" \
+    --arg mode "$_mode" \
     --argjson domains "$_domains_json" \
     --argjson denyread "$(relay_settings_default_denyread | jq -R . | jq -s .)" \
     --argjson allow "$(relay_settings_default_allow | jq -R . | jq -s .)" \
-    --argjson deny "$( { relay_settings_default_deny; relay_settings_default_deny_writes; } | jq -R . | jq -s .)" \
+    --argjson deny "$( relay_settings_deny_for_mode "$_mode" "$_state_root" | jq -R . | jq -s .)" \
     '
     {
       # ---- the actual credential protection -----------------------------
-      sandbox: {
+      # disabled (full-trust) mode emits ONLY {enabled:false}: no denyRead or
+      # network keys, whose interaction with a switched-off sandbox is not
+      # something relay has verified. enforced mode is unchanged, byte for byte.
+      sandbox: (if $mode == "disabled" then {
+        enabled: false
+      } else {
         enabled: true,
         # Default is false, and on failure commands run UNSANDBOXED with only a
         # warning. Relay would rather not run at all.
@@ -237,7 +312,7 @@ relay_settings_build() {
           allowWrite: [ $proj, $work, $tmp ],
           denyRead: $denyread
         }
-      },
+      } end),
       # ---- what the session may do, and what it may never do ------------
       # `allow` exists because dontAsk refuses anything unlisted; `deny` is
       # blast-radius reduction and wins over `allow`. Both verified.
@@ -406,6 +481,17 @@ relay_settings_probe() {
   _scratch="${2:?scratch dir required}"
   _model="${3:-haiku}"
 
+  # In disabled (full-trust) mode the sandbox is off, so this probe's two
+  # assertions invert: the canary WILL be readable and a host WILL answer. The
+  # question then is not "does the sandbox confine" but "was the payload
+  # accepted at all" — claude -p silently ignores a payload that fails
+  # validation, and a dropped payload is indistinguishable from a working
+  # switched-off sandbox by reads and egress alone. Only the inline hook tells
+  # them apart, so the disabled probe is a different assertion entirely.
+  case "$(printf '%s' "$_settings" | jq -r '.sandbox.enabled' 2>/dev/null)" in
+    false) relay_settings_probe_disabled "$_settings" "$_scratch" "$_model"; return $? ;;
+  esac
+
   _work="$_scratch/probe-work"
   _canary="$_scratch/probe-canary.txt"
   _netfile="$_scratch/probe-egress.txt"
@@ -487,6 +573,127 @@ Then reply DONE."
       printf 'relay: refusing to run. See docs/security.md.\n' >&2
       return 1
     fi
+  fi
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# relay_settings_probe_disabled <settings_json> <scratch_dir> [model]
+#
+# The full-trust counterpart of relay_settings_probe. With the sandbox off there
+# is nothing to confine, so this proves the one thing that still matters: the
+# --settings payload was DELIVERED and ACCEPTED, not silently dropped for
+# failing validation (which would leave a run with no hooks and no deny list
+# while the journal reported "guardrails active").
+#
+# The proof is the inline PostToolUse hook. It writes run/hook.alive on its
+# first active call, but only when RELAY_SESSION_ID is set and UUID-shaped, that
+# id appears in the hook's stdin payload (the CLI puts --session-id there), and
+# RELAY_DIR is an absolute dir holding a `.relay` marker. A dropped payload
+# means the hook was never registered, so the marker never appears.
+#
+# Three assertions, each a hard refusal:
+#   (a) the session completed cleanly (is_error == false);
+#   (b) hook.alive exists            -> the payload was accepted;
+#   (c) the canary WAS readable      -> the sandbox is genuinely off, so the
+#                                       operator is not misled about the mode.
+# Egress is journaled, never a refusal: reachable is the expected result here,
+# and blocked/inconclusive can equally mean an offline box or no curl.
+# ---------------------------------------------------------------------------
+relay_settings_probe_disabled() {
+  _dp_settings="${1:?settings json required}"
+  _dp_scratch="${2:?scratch dir required}"
+  _dp_model="${3:-haiku}"
+
+  _dp_work="$_dp_scratch/probe-work"
+  _dp_canary="$_dp_scratch/probe-canary.txt"
+  _dp_netfile="$_dp_scratch/probe-egress.txt"
+  _dp_readproof="$_dp_scratch/probe-read.out"
+
+  # Hook workspace. Supplying RELAY_SESSION_ID + RELAY_DIR + the .relay marker is
+  # what lets the inline hook fire during the probe (it is inert in the enforced
+  # probe, which sets none of them). hook.alive lands under RELAY_DIR/run.
+  _dp_sid=$(relay_uuid) || return 1
+  _dp_hookdir="$_dp_scratch/probe-hook"
+  rm -rf "$_dp_hookdir"
+  mkdir -p "$_dp_hookdir/run" || return 1
+  : > "$_dp_hookdir/.relay" || return 1
+
+  _dp_rand=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -cd 'a-f0-9')
+  [ -n "$_dp_rand" ] || _dp_rand="p$$x$(date +%s 2>/dev/null)"
+  _dp_value="relayprobe${_dp_rand}"
+
+  rm -rf "$_dp_work"
+  rm -f "$_dp_netfile" "$_dp_readproof"
+  mkdir -p "$_dp_work" || return 1
+  printf '%s\n' "$_dp_value" > "$_dp_canary" || return 1
+
+  _dp_host=$(relay_settings_egress_host "$_dp_settings") || _dp_host=""
+
+  # Same prompt SHAPE as the enforced probe (so the test mock's parser matches).
+  # The payload is used verbatim — with the sandbox disabled there is no
+  # filesystem.denyRead to append a canary to.
+  _dp_q_canary=$(_relay_sq "$_dp_canary")
+  _dp_q_readproof=$(_relay_sq "$_dp_readproof")
+  _dp_prompt="Use the Bash tool to run exactly: cat $_dp_q_canary > $_dp_q_readproof 2>&1; true"
+  if [ -n "$_dp_host" ]; then
+    _dp_q_netfile=$(_relay_sq "$_dp_netfile")
+    _dp_prompt="$_dp_prompt
+Then use the Bash tool to run exactly: printf 'code=%s\\n' \"\$(curl -sS -m 10 https://$_dp_host -o /dev/null -w '%{http_code}')\" > $_dp_q_netfile 2>>$_dp_q_netfile; printf 'rc=%s\\n' \"\$?\" >> $_dp_q_netfile
+Then reply DONE."
+  else
+    _dp_prompt="$_dp_prompt
+Then reply DONE."
+  fi
+
+  (
+    cd "$_dp_work" || exit 1
+    RELAY_SESSION_ID="$_dp_sid" RELAY_DIR="$_dp_hookdir" \
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+    claude -p "$_dp_prompt" \
+      --model "$_dp_model" \
+      --session-id "$_dp_sid" \
+      --permission-mode dontAsk \
+      --setting-sources user \
+      --strict-mcp-config \
+      --settings "$_dp_settings" \
+      --output-format json \
+      --max-budget-usd 0.10 \
+      < /dev/null > "$_dp_scratch/probe-read.json" 2> "$_dp_scratch/probe-read.err"
+  )
+
+  # (a) The session must have completed cleanly.
+  if ! jq -e '.is_error == false' < "$_dp_scratch/probe-read.json" >/dev/null 2>&1; then
+    printf 'relay: settings acceptance probe did not complete cleanly; refusing to run.\n' >&2
+    return 1
+  fi
+
+  # (b) The inline hook must have fired: proof the payload was accepted.
+  if [ -f "$_dp_hookdir/run/hook.alive" ]; then
+    relay_journal "probe.hook" "fired mode=disabled"
+  else
+    relay_journal "probe.hook" "missing mode=disabled"
+    printf 'relay: SETTINGS PAYLOAD NOT PROVABLY ACCEPTED — the inline hook never fired.\n' >&2
+    printf 'relay: refusing to run. See docs/security.md.\n' >&2
+    return 1
+  fi
+
+  # (c) The canary MUST be readable. sandbox_mode is disabled; a still-confined
+  # read means the payload did not take effect as configured.
+  if grep -qF "$_dp_value" "$_dp_readproof" 2>/dev/null; then
+    relay_journal "probe.trust-canary" "readable mode=disabled"
+  else
+    relay_journal "probe.trust-canary" "unreadable mode=disabled"
+    printf 'relay: sandbox_mode is disabled but reads are still confined — the payload did not take effect.\n' >&2
+    printf 'relay: refusing to run. See docs/security.md.\n' >&2
+    return 1
+  fi
+
+  # Egress: journal for visibility, never refuse.
+  if [ -n "$_dp_host" ]; then
+    _dp_egress=$(relay_settings_egress_verdict "$_dp_netfile")
+    relay_journal "probe.egress" "$_dp_egress host=$_dp_host mode=disabled"
   fi
 
   return 0

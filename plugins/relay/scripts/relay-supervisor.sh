@@ -331,7 +331,35 @@ if [ -n "$ALLOW_DOMAINS" ]; then
   relay_journal "sandbox.extra-domains" "$ALLOW_DOMAINS"
 fi
 
-SETTINGS=$(relay_settings_build "$PROJECT" "$WORK" "$HOOK" "$ALLOW_DOMAINS") || {
+# sandbox_mode selects whether sessions run under the OS sandbox. enforced
+# (default) is the behaviour relay has always had. disabled turns the sandbox
+# fully OFF — a full-trust opt-in the operator accepts at /relay-init, recorded
+# in config, surfaced by status and doctor, and re-proven by the acceptance
+# probe in its inverted form (which then proves the payload was ACCEPTED, since
+# there is no sandbox left to confine). Like model_tier, an unknown value is
+# refused here rather than guessed; a mode name is a non-command value, safe in
+# the shareable config tier.
+SANDBOX_MODE=$(cfg sandbox_mode enforced)
+case "$SANDBOX_MODE" in
+  enforced|disabled) : ;;
+  *)
+    relay_journal "config.sandbox-mode-invalid" "$(printf '%s' "$SANDBOX_MODE" | head -c 80)"
+    printf 'relay: sandbox_mode must be enforced or disabled, got: %s\n' "$SANDBOX_MODE" >&2
+    exit "$EX_PREFLIGHT" ;;
+esac
+relay_journal "sandbox.mode" "$SANDBOX_MODE"
+# The probe's refusal wording is mode-specific: enforced proves the sandbox
+# confines; disabled proves the payload was accepted at all. Resolved here so
+# the probe block below stays a single pair of lines.
+if [ "$SANDBOX_MODE" = "disabled" ]; then
+  _probe_fail_reason="settings-not-accepted"
+  _probe_fail_note="settings payload could not be proven accepted"
+else
+  _probe_fail_reason="sandbox-not-enforced"
+  _probe_fail_note="sandbox enforcement could not be proven"
+fi
+
+SETTINGS=$(relay_settings_build "$PROJECT" "$WORK" "$HOOK" "$ALLOW_DOMAINS" "$SANDBOX_MODE") || {
   relay_journal "settings.build-failed" ""; exit "$EX_PREFLIGHT"; }
 
 # Prove the payload is actually enforced before running anything unattended.
@@ -362,8 +390,8 @@ if [ "${RELAY_SKIP_PROBE:-0}" != "1" ]; then
       relay_journal "probe.ok" "$FP"
     else
       relay_journal "probe.failed" "$FP"
-      relay_notify "relay: refusing to start" "sandbox enforcement could not be proven"
-      state_set status "preflight-failed" reason "sandbox-not-enforced"
+      relay_notify "relay: refusing to start" "$_probe_fail_note"
+      state_set status "preflight-failed" reason "$_probe_fail_reason"
       exit "$EX_PREFLIGHT"
     fi
   fi
@@ -371,7 +399,7 @@ if [ "${RELAY_SKIP_PROBE:-0}" != "1" ]; then
 fi
 
 PLAN_HASH=$(relay_hash "$PLAN_PATH")
-state_set status "running" plan_hash "$PLAN_HASH"
+state_set status "running" plan_hash "$PLAN_HASH" sandbox_mode "$SANDBOX_MODE"
 
 # ---------------------------------------------------------------------------
 # Handoff: a structured document, validated. Free-form prose is where prompt

@@ -295,6 +295,13 @@ else
     pass "recorded consent matches the current notice"
   fi
 
+  # Not a failure — it is a consented, deliberate configuration. But it is the
+  # single fact that most changes what a stray session can reach, so doctor
+  # says it out loud every time rather than leaving it buried in config.json.
+  if [ "$(jq -r '.sandbox_mode // "enforced"' "$STATE/config.json" 2>/dev/null)" = "disabled" ]; then
+    warn "sandbox_mode is disabled (FULL TRUST): sessions run with NO sandbox — any host, any readable file, including ~/.ssh"
+  fi
+
   # Not a failure: relay still verifies COMPLETE via sealed sentinel, clean
   # tree and new commits. But with no acceptance command there is nothing
   # EXECUTABLE standing between "the model says it is done" and EX_OK.

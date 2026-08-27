@@ -47,6 +47,20 @@ while the egress check can come back *inconclusive* on a machine without
 proceeds on the canary's proof alone, because "we could not tell" is not the
 same claim as "blocked".
 
+**You can switch the sandbox off, deliberately.** Some work genuinely needs the
+network: deploying, operating a server, SSHing to a host. For that there is one
+per-project opt-in, `sandbox_mode: "disabled"`, chosen at `/relay-init` and
+never inferred. It means what it says — **no sandbox at all**: sessions can
+reach any host, SSH to your machines, and read anything you can read, including
+`~/.ssh`. Most of the deny-list is lifted with it, and what remains (relay still
+never pushes) stops accidents rather than intent, since anything reachable from
+a shell is reachable. Relay still refuses to start without proof, but the proof
+inverts: it checks that its own inline hook fired and that reads really are
+unconfined, so a silently-dropped payload cannot masquerade as full trust. The
+mode is written into `state.json`, announced by `/relay-status`, warned about by
+`/relay-doctor`, and covered by the consent notice you accept at init. Choose it
+only for a repository you would trust with your SSH keys.
+
 **Relay never pushes.** It commits — with an explicit filtered pathspec, never
 `git add -A`, refusing credential-shaped filenames and scanning the full
 content of every staged file for secrets (content, not diff, so an in-tree
@@ -197,6 +211,13 @@ the repository.
   and nothing else, so `npm ci` fails inside the sandbox until the registry is
   listed here. Validated as hostnames at preflight; a malformed value refuses
   to start rather than silently never matching.
+- **`sandbox_mode`** (`config.json`, default `enforced`) — `enforced` runs every
+  session under the OS sandbox. `disabled` is the full-trust opt-in described
+  above: no sandbox, so SSH, arbitrary hosts and any readable file are in reach,
+  and `allow_domains` stops applying (there is no allowlist left to extend).
+  Anything else refuses to start. It is read once at supervisor startup, so
+  changing it means stop, edit, `/relay-resume` — and changing it also forces a
+  fresh acceptance probe, since the proof is keyed to the payload.
 - **`keep_sessions` / `keep_days`** (`config.json`, defaults 5 and 7) — how
   many session logs survive pruning, and for how many days. Session logs hold
   whatever the agent read; this is the retention control.

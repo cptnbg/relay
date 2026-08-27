@@ -112,6 +112,11 @@ under `test/lint/probe0-*.sh` must be re-run first. See `CONTRIBUTING.md`. Every
 claim relay makes about CLI behaviour rests on those probes, and a CLI version
 they were never run against is an unverified claim.
 
+The same applies to a release that changes what relay sends in `--settings`,
+even on an unchanged CLI. `probe0-sandbox.sh` covers the `enforced` payload and
+`probe0-sandbox-off.sh` covers the full-trust one; both are claims about how the
+CLI reacts to a payload, and neither is established by the mock suite.
+
 ## 6. Tag, signed
 
 ```
