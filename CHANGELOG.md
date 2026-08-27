@@ -6,6 +6,55 @@ recorded user consent.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-26
+
+MAJOR because it relaxes a `SECURITY.md` design commitment (#4). Recorded
+consent is invalidated: the consent notice changed, so `/relay-doctor` refuses
+every existing project until `/relay-init` is re-run and the current notice
+re-accepted. That is the mechanism working as designed, not a regression.
+
+### Added
+- `sandbox_mode` (`config.json`, default `enforced`). `disabled` is a per-project,
+  consented, full-trust opt-in that turns the OS sandbox **off**, so sessions can
+  SSH to hosts, reach any network, and read anything the user can read. It exists
+  because relay was unusable for work that legitimately needs live hosts —
+  deploying, operating a server, probing infrastructure — where the sandbox is
+  not a nuisance to work around but a hard stop.
+- A full-trust acceptance probe, `relay_settings_probe_disabled()`. With no
+  sandbox, "canary readable and host reachable" describes both a healthy run and
+  a payload the CLI silently discarded, so the discriminator is relay's own
+  inline hook: the probe supplies the environment the hook needs and requires
+  `run/hook.alive` to appear, plus a readable canary proving the sandbox really
+  is off. Egress becomes journal-only there and never refuses.
+- `sandbox_mode` recorded in `state.json`, announced as the first line of
+  `/relay-status`, and warned about by `/relay-doctor` on every run.
+- Seven test cases (`c230`-`c236`) covering payload shape, preflight refusal of
+  an unknown mode, healthy full-trust end to end, both new probe refusals,
+  probe-cache invalidation on a mode switch, and guardrail-drift still arming in
+  full-trust mode. Three new mock probe modes (`open`, `dropped`, `confined`).
+
+### Changed
+- `SECURITY.md` commitment 4 now states the invariant relay actually enforces:
+  it refuses to run unless it can prove the settings payload was accepted. The
+  sandbox is that proof in `enforced` mode; the sandbox is switched off only by
+  explicit operator opt-in, never inferred and never as a fallback.
+- The consent notice describes full-trust mode plainly, including that the
+  remaining deny-list entries stop accidents rather than intent once the sandbox
+  is gone.
+- In `disabled` mode the deny list keeps only the never-push entries and the
+  write-persistence guards; operational commands, credential reads and the web
+  tools are all permitted.
+
+### Unchanged, deliberately
+- The `enforced` payload is byte-for-byte identical, so existing probe caches
+  stay valid and every prior guarantee holds for projects that do not opt in.
+- `--dangerously-skip-permissions` remains forbidden in both modes; relay still
+  never pushes; `--setting-sources user` and `--strict-mcp-config` are still
+  always passed.
+- The guardrail-drift filter is not weakened in full-trust mode. RUN.md instead
+  gives sessions the phrase "full-trust mode", which is accurate and does not
+  trip it.
+
 ## [0.1.0] - 2026-08-18
 
 ### Added

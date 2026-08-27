@@ -13,8 +13,36 @@ reports its control case leaking (so the probe can still observe a leak), the `d
 canary blocked, and egress to `example.com` refused with a CONNECT 403. The two findings
 relay's whole threat model rests on therefore hold on the newer CLI.
 
-**Not re-run on 2.1.234: findings 2, 5 and 6** (`probe0-settings-hooks.sh`,
-`probe0-integration.sh`, `probe0-permission-mode.sh`). What a newer CLI changed there is
+**Finding 7 established on 2.1.234 (2026-08-27)** by `probe0-sandbox-off.sh`, for
+`sandbox_mode: "disabled"`. Case 1 (relay's full-trust payload): `is_error=false`,
+relay's inline hook wrote `run/hook.alive`, the canary was **readable**, and
+`https://example.com` answered `code=200 rc=0`. So the CLI honours the minimal
+`sandbox: {"enabled": false}` object rather than rejecting the payload, and full
+trust really is full. Case 2 (same payload, `hooks` block removed): no marker —
+the control proving the marker is evidence of delivery rather than a coincidence.
+Together they are what lets the disabled-mode probe distinguish an accepted
+payload from a silently discarded one.
+
+One empirical caveat found while establishing it, and the reason the probe's
+scratch is named the way it is: an earlier draft used a canary file called
+`canary-secret.txt` holding `RELAY-CANARY-…-DO-NOT-LEAK`, and haiku **refused the
+prompt outright** as a suspected exfiltration test. It made no tool calls, so no
+hook marker and no read proof appeared. Two consequences worth keeping in mind.
+Probe scratch must look mundane — production already uses a neutral
+`relayprobe<hex>` token for exactly this reason. And a model refusal is a real
+failure mode for the disabled-mode probe: it fails **closed** (missing marker →
+refuse to run), which is the safe direction, but the cause is the model, not the
+payload. `docs/troubleshooting.md` lists it under the missing-marker symptom.
+
+**Finding 5 re-verified on 2.1.234 (2026-08-27)**, after `relay_settings_build`
+gained its `sandbox_mode` argument. `probe0-integration.sh` reports relay's real
+payload accepted, the exec-form hook firing through a path containing a space,
+and `denyRead` still enforced — so the refactor did not disturb the enforced
+path. That is corroborated statically too: the `enforced` payload is byte-for-byte
+identical to the one 0.1.0 shipped.
+
+**Not re-run on 2.1.234: findings 2 and 6** (`probe0-settings-hooks.sh`,
+`probe0-permission-mode.sh`). What a newer CLI changed there is
 unverified, not assumed unchanged. Relay's runtime covers part of that gap on its own —
 the sandbox-enforcement probe's cache key includes `claude --version`, so a version
 change forces a fresh runtime proof of the sandbox before any run starts, and that proof
@@ -155,22 +183,26 @@ has to be probed against the real CLI.
 
 ## Standing design rules that follow
 
+Rules 1-5 describe the default `enforced` mode. Where `sandbox_mode: "disabled"`
+(full trust) changes them, that is stated inline and in "Trust mode inverts the
+probe" below; rules 6 and 7 hold in both modes.
+
 1. **Fail closed on settings.** `-p` silently ignores settings files that fail validation,
    so relay must positively confirm enforcement before every run rather than assume it.
    The production acceptance probe (`relay_settings_probe`,
-   `plugins/relay/scripts/relay-settings.sh:403-492`) is `probe0-sandbox.sh`'s shape:
+   `plugins/relay/scripts/relay-settings.sh:474-573`) is `probe0-sandbox.sh`'s shape:
    in a relay-owned scratch directory (`$STATE/work/probe/`), assert that a `denyRead`
    canary is actually unreadable and that a host outside `network.allowedDomains` is
    actually unreachable. Both assertions leave evidence in files the supervisor reads,
    never in the model's prose: the canary read is redirected into a proof file (a
    sandbox that is off puts the canary's value there whatever the model then says,
-   `relay-settings.sh:431-439`), and the egress attempt records `code=`/`rc=` marker
+   `relay-settings.sh:515-521`), and the egress attempt records `code=`/`rc=` marker
    lines that the verdict parser reads by key — never "the first three digits in the
    file", which once misread curl's own "port 443" error text as an HTTP status and
-   refused a working sandbox (`relay-settings.sh:326-331`). The run is refused if the
+   refused a working sandbox (`relay-settings.sh:396-402`). The run is refused if the
    canary's value appears in the proof file, the session JSON, or stderr; if the probe
    session did not complete cleanly (`.is_error == false`); or if the egress verdict is
-   `reachable` (`relay-settings.sh:467-489`).
+   `reachable` (`relay-settings.sh:548-571`).
 
    One deliberate asymmetry, added when relay's own audit found the runtime probe testing
    only the canary while this rule claimed both: an egress attempt relay cannot interpret
@@ -180,9 +212,17 @@ has to be probed against the real CLI.
    relay unrunnable on a machine where nothing is actually wrong. `probe0-sandbox.sh`,
    which is run by a human against a machine that does have `curl`, remains the place
    egress blocking is proven outright.
-2. **`sandbox.failIfUnavailable: true` always.** The default is false, and on failure
-   commands run *unsandboxed* with only a warning.
-3. **Never `sandbox.filesystem.disabled: true`** — it drops `denyRead` protection.
+2. **`sandbox.failIfUnavailable: true` whenever the sandbox is on.** The default is
+   false, and on failure commands run *unsandboxed* with only a warning — a silent
+   downgrade to exactly the state `sandbox_mode: "disabled"` reaches deliberately, but
+   without the operator having chosen it, without consent, and without the status
+   surfaces saying so. The distinction relay draws is not sandbox-vs-no-sandbox, it is
+   chosen-vs-accidental.
+3. **Never `sandbox.filesystem.disabled: true`** — it drops `denyRead` protection while
+   leaving `sandbox.enabled` reading as `true`, i.e. a payload that misreports itself.
+   Full-trust mode instead emits `{"enabled": false}` and nothing else: no `denyRead`
+   and no `network` keys whose behaviour under a switched-off sandbox relay has not
+   verified, and no shape that could be mistaken for an enforcing payload.
 4. **Never `--safe-mode`.** It disables all customizations including relay's own hooks,
    while permissions "work normally". It is a troubleshooting flag, not a sandbox.
 5. **Never `--bare` or `--no-session-persistence` in default mode.** `--bare` skips hooks
@@ -195,6 +235,38 @@ has to be probed against the real CLI.
    `dontAsk` an omitted `allow` list is not a permissive default — it is a total
    refusal (finding 6).
 
+## Trust mode inverts the probe
+
+`sandbox_mode: "disabled"` is a per-project opt-in recorded at `/relay-init`. It emits
+`sandbox: {"enabled": false}` and opens the deny-list to operational commands, keeping
+only the never-push entries and the write-persistence guards. Sessions can then SSH,
+reach any host, and read anything the user can read.
+
+The reason this needs its own probe rather than no probe is rule 1: `-p` silently ignores
+a payload that fails validation. With the sandbox off, "canary readable and host
+reachable" is what a **healthy** full-trust run looks like — and it is also exactly what a
+**dropped payload** looks like. Reads and egress cannot tell them apart, and a dropped
+payload means no hooks and no deny-list at all while the journal claims otherwise.
+
+The discriminator is relay's own inline `PostToolUse` hook, which is delivered inside the
+same `--settings` payload. `relay_settings_probe_disabled`
+(`plugins/relay/scripts/relay-settings.sh:599-701`) supplies the environment the hook
+requires — `RELAY_SESSION_ID` (also passed as `--session-id`, so the id appears in the
+hook's stdin payload) and a `RELAY_DIR` holding a `.relay` marker — then asserts three
+things, refusing on each: the session completed cleanly; `run/hook.alive` exists, proving
+the payload was accepted; and the canary *was* readable, proving the sandbox really is off
+rather than the operator being misled about which mode they are in. Egress is journaled
+and never refuses, because `reachable` is the expected result here and `blocked` may only
+mean an offline machine.
+
+Because the probe cache is keyed by `(payload + CLI version)`, flipping the mode always
+forces a fresh proof; neither mode can ever inherit the other's evidence
+(`test/cases/c235_mode_switch_invalidates_probe_cache.sh`).
+
+The guardrail-drift filter is deliberately **not** relaxed in this mode — it is one of the
+few rails left once the sandbox is gone. RUN.md instead gives sessions the phrase
+"full-trust mode", which is accurate and does not match the filter.
+
 ## What relay does not protect against
 
 - The agent runs the project's build and test commands. Those execute arbitrary repository
@@ -206,6 +278,15 @@ has to be probed against the real CLI.
   Relay cannot redact that file.
 - Relay's own supervisor runs outside the sandbox. Relay's session sandbox does not extend
   to it.
+- Under `sandbox_mode: "disabled"`, anything a shell can reach: SSH keys, other hosts,
+  the whole readable filesystem. The remaining deny-list entries are honoured by the
+  Write/Edit tools only, so relay's own `$STATE` files — journal, `state.json`,
+  `probe.ok` — are protected there by convention rather than by enforcement. The one
+  check that still bites is the acceptance command's: before running it, relay re-reads
+  `exec.json` and requires both that its hash matches the recorded `exec_hash` *and* that
+  the argv still equals `ACCEPT_CMD_JSON`, the value captured in memory at preflight
+  (`relay-supervisor.sh:722-726`). Rewriting the command and its hash together on disk
+  therefore still fails, because the in-memory anchor predates any session.
 
 ## Local hygiene note
 

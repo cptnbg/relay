@@ -92,14 +92,21 @@ session is launched:
 8. Prune old session logs (`:311`, `lib/relay-lib.sh:548-577`).
 9. Validate any extra sandbox egress domains as a plain hostname list
    (`:313-332`).
-10. Build the `--settings` JSON payload (`:334-335`, see §7) and **prove** the
+9b. Validate `sandbox_mode` as exactly `enforced` or `disabled` and journal it
+   (`:334-360`). Anything else refuses at preflight, like an invalid
+   `model_tier`: the mode decides whether a sandbox exists at all, so relay
+   never guesses it. The value is passed to the payload builder as its fifth
+   argument and recorded in `state.json` for `/relay-status`.
+10. Build the `--settings` JSON payload (`:362-363`, see §7) and **prove** the
    sandbox it describes is actually enforced by running a real probe session,
    unless a cached fingerprint for the same payload + CLI version already
-   proved it (`:337-371`). The fingerprint itself must be a real 40-hex git
+   proved it (`:365-399`). Because the mode changes the payload, it also changes
+   the fingerprint, so switching modes always re-proves rather than inheriting
+   the other mode's evidence. The fingerprint itself must be a real 40-hex git
    blob id, or relay refuses — an uncomputable fingerprint used to equal the
    empty string a missing cache file yields, which read as a cache hit and
-   skipped the proof (`:342-355`). `relay_settings_probe()`
-   (`relay-settings.sh:403-492`) appends a relay-owned
+   skipped the proof (`:370-383`). `relay_settings_probe()`
+   (`relay-settings.sh:474-573`) appends a relay-owned
    canary path to `sandbox.filesystem.denyRead` and asks one cheap session to
    do two things: `cat` the canary with its output redirected into a proof
    file, and `curl` a host that is not in `network.allowedDomains`, writing
@@ -110,9 +117,20 @@ session is launched:
    JSON output, or stderr, if the session did not complete cleanly
    (`.is_error == false`), or if that host answered.
 
+   In `disabled` mode the assertions invert and `relay_settings_probe_disabled()`
+   (`relay-settings.sh:599-701`) runs instead: with no sandbox, an unreadable
+   canary and a blocked host are no longer evidence of anything, and worse, a
+   healthy full-trust run and a payload the CLI silently discarded look
+   identical from reads and egress alone. So it proves the payload was
+   *accepted* — by supplying the environment relay's own inline hook needs
+   (`RELAY_SESSION_ID`, `--session-id`, a `RELAY_DIR` with a `.relay` marker)
+   and requiring `run/hook.alive` to appear — and additionally requires the
+   canary to be readable, so an operator who asked for full trust is never
+   silently given something else. Egress there is journaled, never fatal.
+
    Be precise about what the second assertion proves, because the outcomes are
    deliberately not symmetric. `relay_settings_egress_verdict()`
-   (`relay-settings.sh:333-363`) parses the `code=`/`rc=` markers — never
+   (`relay-settings.sh:404-472`) parses the `code=`/`rc=` markers — never
    "the first three digits in the file", which once misread curl's own
    "port 443" error text as an HTTP status and refused a working sandbox —
    and reports `reachable`, `blocked`, or `inconclusive`; only `reachable`
@@ -594,18 +612,23 @@ hooks: {
 }
 ```
 
-(`relay-settings.sh:248-255`), where `$hook` is
+(`relay-settings.sh:319-326`), where `$hook` is
 `plugins/relay/hooks/relay-ctx.sh` (`relay-supervisor.sh:72`). Exec form —
 `command` plus an `args` array — is used deliberately so a hook path
-containing spaces is never re-parsed by a shell (`relay-settings.sh:244-247`,
+containing spaces is never re-parsed by a shell (`relay-settings.sh:315-318`,
 corroborated by `docs/security.md:80-82`).
+
+Being delivered inside the payload gives the guard a second job in `disabled`
+mode: it is the only part of the payload whose effect is observable when there
+is no sandbox to observe, so `run/hook.alive` is what the full-trust acceptance
+probe reads to prove the payload was not silently discarded (§4, step 10).
 
 **What it reads.** The hook receives the standard `PostToolUse`/`PreCompact`
 JSON payload on stdin (drained with a 5-second timeout, `relay-ctx.sh:44-47`)
 and three environment variables the supervisor sets only for this session's
 child process: `RELAY_SESSION_ID`, `RELAY_DIR` (the session-writable
 `$STATE/work`, the only place the sandbox lets the hook write),
-`RELAY_CTX_WINDOW` (`relay-supervisor.sh:871-873`). It validates
+`RELAY_CTX_WINDOW` (`relay-supervisor.sh:899-901`). It validates
 `RELAY_SESSION_ID` is
 UUID-shaped before ever using it in a path (`relay-ctx.sh:61-62`), and
 exits inert unless the payload's own session id matches the environment's —

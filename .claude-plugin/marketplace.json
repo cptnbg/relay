@@ -11,7 +11,7 @@
       "name": "relay",
       "source": "./plugins/relay",
       "description": "Run a long multi-phase build to completion across automatically chained Claude Code sessions, refreshing context before quality degrades.",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "author": { "name": "Boris Griggs" },
       "category": "development",
       "homepage": "https://github.com/cptnbg/relay",

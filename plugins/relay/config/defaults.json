@@ -22,6 +22,7 @@
   "max_usage_retries": 20,
 
   "allow_domains": "",
+  "sandbox_mode": "enforced",
   "keep_sessions": 5,
   "keep_days": 7
 }

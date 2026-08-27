@@ -48,6 +48,12 @@ The state dir has **two trust zones**:
   `exec.json`, `INBOX.md`, `STOP`, `locks/`, `sessions/`, `handoffs/`. A
   sandboxed session cannot write these, which is what makes them trustworthy.
 
+The second zone is enforced by the sandbox, so under `sandbox_mode: "disabled"`
+it is a convention rather than a boundary: permission rules still deny the
+Write/Edit tools, but Bash is not bound by them. Trust these files accordingly
+in full-trust mode — the one check that still holds is the acceptance command's,
+which is anchored to a value captured in memory at preflight.
+
 ## Resolve the plugin root
 
 `CLAUDE_PLUGIN_ROOT` is **not guaranteed to be set in the Bash tool's
@@ -116,6 +122,18 @@ needs (`allow_domains`, e.g. a package registry — the sandbox blocks everythin
 else), log retention (`keep_sessions`, `keep_days`), and the acceptance command
 that proves the work is done.
 
+Also ask for `sandbox_mode`, but only offer the second option when the plan
+genuinely needs it, and never pre-select it:
+
+- `enforced` (default) — sessions run under the OS sandbox: reads confined,
+  egress limited to the allowlist.
+- `disabled` — **full trust: there is no sandbox.** Sessions can reach any host,
+  SSH to machines, and read anything you can read, including `~/.ssh`. Choose it
+  when the work genuinely requires live hosts or the network (deploying,
+  operating a server, probing infrastructure) and never for a repository you
+  would not trust with your SSH keys. It is a per-project choice, recorded in
+  config, and it is covered by the consent notice below.
+
 Secrets are recorded **by path, never by value**. If the user supplies a secret
 inline, write it to their existing secrets location and reference that path.
 
@@ -136,9 +154,27 @@ the anti-drift instrument. Sections:
 ## Course corrections       (appended by review sessions only)
 ```
 
+When `sandbox_mode` is `disabled`, say so in **Guardrails** using this wording,
+which is both accurate and safe for sessions to echo:
+
+```markdown
+This run is full-trust mode: the OS sandbox is off by operator choice, recorded
+in config at init. It is settled and not re-negotiable mid-run. Everything else
+in this section still binds — relay never pushes.
+```
+
+Write it that way deliberately. The supervisor halts a run whose handoff claims
+a guardrail was relaxed (a permission word and a danger word on one line), and
+that filter is NOT weakened in full-trust mode — it matters more there, since
+the sandbox is no longer a boundary. Sessions echo RUN.md's phrasing, and
+"full-trust mode" never trips it, whereas improvising "the user approved
+disabling the sandbox" into a handoff would halt the run.
+
 **5. Write `$STATE/config.json`** from `$RELAY_ROOT/config/defaults.json`
-merged with the interview answers. This file may hold **settings only, never
-commands**. Commands live in `$STATE/exec.json` (see `approve`).
+merged with the interview answers — including `sandbox_mode`, which must be
+exactly `enforced` or `disabled` (the supervisor refuses anything else at
+preflight). This file may hold **settings only, never commands**. Commands live
+in `$STATE/exec.json` (see `approve`).
 
 It **must include `plan_path`**: the absolute path of the plan file this init
 was given. The supervisor refuses to start (exit 78) if `plan_path` does not
@@ -175,15 +211,21 @@ suppressed. While it runs:
   * It creates git commits without asking. It NEVER pushes.
   * It spends money on your account, up to the caps you just set, then stops.
   * A sandbox restricts filesystem reads and network egress. If the sandbox
-    cannot start, relay refuses to run.
+    cannot start, relay refuses to run — UNLESS you chose sandbox_mode
+    "disabled". In that mode there is NO sandbox: sessions can reach any host
+    on your network, SSH to your machines, and read anything you can read,
+    including ~/.ssh and your own credentials.
   * A deny list blocks sudo, push, docker, cloud CLIs and credential reads.
-    A deny list is NOT a sandbox.
+    A deny list is NOT a sandbox. In "disabled" mode most of it is lifted on
+    purpose, and what remains stops accidents, not a determined session:
+    anything reachable from a shell is reachable.
   * Your build and test commands still execute arbitrary repository code with
     your full privileges. The sandbox confines that; the deny list cannot see
-    inside it.
+    inside it. With the sandbox off, nothing confines it.
 
 Do not run relay on a repository you would not `npm install && npm test`
-without thinking. Do not run it where a mistake is expensive.
+without thinking. Do not run it where a mistake is expensive. Never choose
+"disabled" for a repository you would not trust with your SSH keys.
 ```
 
 Record the acceptance in `$STATE/config.json` under the key `consent`, with the
@@ -256,7 +298,21 @@ Do not stay alive polling the run. The whole point is that it does not need you.
 
 Read and summarise — no side effects.
 
-**Liveness first.** `state.json` saying `running` proves nothing: the
+**Full-trust mode first, when it applies.** If `state.json`'s `sandbox_mode`
+(falling back to `config.json`) is `disabled`, the very first line of the report
+must say so, before liveness:
+
+```bash
+_mode=$(jq -r '.sandbox_mode // empty' "$STATE/state.json" 2>/dev/null)
+[ -n "$_mode" ] || _mode=$(jq -r '.sandbox_mode // "enforced"' "$STATE/config.json" 2>/dev/null)
+[ "$_mode" = "disabled" ] && \
+  printf 'FULL-TRUST MODE — the sandbox is OFF for this run (operator opt-in at init)\n'
+```
+
+Never bury it further down and never soften it: it is the single fact that most
+changes what a stray session can reach.
+
+**Liveness next.** `state.json` saying `running` proves nothing: the
 supervisor may have been killed, crashed, or hit a cap since it last wrote.
 The lock owner file is the live signal — format `pid|epoch|host|run_id`:
 
@@ -275,7 +331,8 @@ fi
 ```
 
 Then report:
-- `$STATE/state.json`: status, session count, tier, stall/fastfail counters, cost
+- `$STATE/state.json`: status, session count, tier, stall/fastfail counters, cost,
+  and `sandbox_mode`
 - the last ~20 journal lines (`$STATE/journal.log`)
 - the current position from `$STATE/work/continue.json` (`next` is the live
   answer to "what is it doing right now")
@@ -361,9 +418,12 @@ The supervisor enforces this: an `acceptance_cmd` with no valid `exec_hash`
 refuses at preflight (exit 78), and immediately before *running* the command it
 recomputes the hash from `exec.json` as it exists at that moment and halts the
 run BLOCKED on any mismatch. That is what makes "any later change to a command
-requires re-approval" a mechanism rather than a promise. (Sessions cannot write
-`exec.json` at all — it sits outside the sandbox's writable set — so a mismatch
-means an out-of-band edit after approval.)
+requires re-approval" a mechanism rather than a promise. (Under `enforced` mode
+sessions cannot write `exec.json` at all — it sits outside the sandbox's
+writable set — so a mismatch means an out-of-band edit after approval. In
+full-trust mode the file is reachable from Bash, which is why the check also
+requires the argv to equal the value captured in memory at preflight: rewriting
+the command and its hash together on disk still fails.)
 
 **A repository can never make relay run a command.** `.relay/config.json` in a
 repo holds settings only. If you find a command-bearing key in a repo-tracked

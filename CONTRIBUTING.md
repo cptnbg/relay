@@ -124,7 +124,7 @@ Keep it that way as a contributor:
   automatically, on every contributor's machine and in CI, with zero API
   budget available to it.
 - If you need to observe the real CLI, write a new `test/lint/probe0-*.sh`
-  instead — paid, run by hand, exactly like the five described next.
+  instead — paid, run by hand, exactly like the six described next.
 
 ## The paid probes (`test/lint/probe0-*.sh`)
 
@@ -132,7 +132,7 @@ These make real, billed API calls against the actual Claude Code CLI. They
 are deliberately outside `test/run.sh`'s discovery path and CI never runs
 them (`probe0-permission-mode.sh` says so of itself,
 `probe0-permission-mode.sh:5-8`; `.github/workflows/ci.yml` confirms it by
-omission — none of the five `probe0-*.sh` files are referenced anywhere in
+omission — none of the six `probe0-*.sh` files are referenced anywhere in
 that workflow). Each probe caps its own per-invocation spend with
 `--max-budget-usd` and defaults to the `haiku` model. What each one
 establishes, and the caps recorded in the source:
@@ -163,6 +163,16 @@ establishes, and the caps recorded in the source:
   (including when the hook path and project path both contain a space), and
   enforces sandbox `denyRead` — together, not as three claims tested in
   isolation (`docs/security.md`, finding 4).
+- **`probe0-sandbox-off.sh`** — two invocations, `--max-budget-usd 0.10` each
+  (`probe0-sandbox-off.sh:83`). Establishes that `sandbox: {"enabled": false}`
+  delivered inline is honoured rather than silently dropped, and that relay can
+  still tell those two apart. Case 1 sends the full-trust payload and expects a
+  readable canary, reachable egress, and relay's inline hook to have written
+  `run/hook.alive`; case 2 sends the same payload with the `hooks` block removed
+  and expects the marker to be absent, which is the control proving the marker is
+  real evidence rather than a coincidence. This is what `sandbox_mode: "disabled"`
+  rests on: with no sandbox, the hook is the only observable proof the payload was
+  accepted at all.
 - **`probe0-permission-mode.sh`** — four invocations, `--max-budget-usd 0.15`
   each (`probe0-permission-mode.sh:70`). Establishes what
   `--permission-mode dontAsk` actually permits: a deny-only payload refuses
@@ -173,13 +183,13 @@ establishes, and the caps recorded in the source:
   settings payload could not write a single file
   (`docs/security.md:127-131`).
 
-No total dollar cost for a full run of all five is recorded anywhere in this
+No total dollar cost for a full run of all six is recorded anywhere in this
 repository. The figures above are per-invocation caps taken directly from
 the scripts, not measured spend — treat them as an upper bound, not a
 receipt, and do not read anything more precise into them than that: they
 make real, billed API calls.
 
-Re-run all five whenever the Claude Code CLI version changes, not only the
+Re-run all six whenever the Claude Code CLI version changes, not only the
 one whose surface you believe you touched. `docs/security.md` states plainly
 that every finding in it "was verified empirically against Claude Code
 2.1.233" (`docs/security.md:3-4`), and its own standing design rules record
@@ -208,9 +218,12 @@ SemVer, "with one addition: a change that relaxes any commitment in
 Concretely: a pull request that makes `--dangerously-skip-permissions`
 reachable under any flag or config, lets relay push to a git remote, stops
 passing `--setting-sources user` or `--strict-mcp-config` on some code path,
-weakens the refusal to run when the sandbox cannot be proven enforced, adds
-a global hook, or lets a repository-tracked config cause relay to execute a
-command — any of the six commitments in `SECURITY.md` — is not an ordinary
+weakens the refusal to run when relay cannot prove its settings payload was
+accepted — including widening when the sandbox may be switched off, or letting
+anything other than an explicit operator opt-in select `sandbox_mode:
+"disabled"` — adds a global hook, or lets a repository-tracked config cause
+relay to execute a command — any of the six commitments in `SECURITY.md` — is
+not an ordinary
 feature or bugfix. It requires a MAJOR version bump on its own, regardless
 of what else ships in that release, and it means every user who already
 consented to run relay under the old commitments is treated as having

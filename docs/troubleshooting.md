@@ -51,11 +51,11 @@ consent (`consent.notice_hash`) fails doctor's hard check
 self-tested against the live `grep` at startup — if either cannot be shown to
 fire (ugrep rejects complex patterns with exit 2 and no output), relay
 refuses rather than run with a silently disabled defence
-(`relay-supervisor.sh:488-511`).
+(`relay-supervisor.sh:516-539`).
 
 ## The sandbox probe failed
 
-What it checks: `relay_settings_probe()` (`relay-settings.sh:403-492`)
+What it checks: `relay_settings_probe()` (`relay-settings.sh:474-573`)
 appends a relay-owned canary file to the session's
 `sandbox.filesystem.denyRead` and asks one cheap `haiku` session to do two
 things — `cat` the canary with the output redirected into a proof file, and
@@ -63,13 +63,13 @@ things — `cat` the canary with the output redirected into a proof file, and
 marker lines. Both commands leave their evidence in files the supervisor
 reads; the verdict never depends on the model's own summary. It refuses to
 start if the canary's value appears in the proof file, the session's JSON
-output, or stderr (`relay-settings.sh:467-471`), if the session did not
-complete cleanly — `.is_error == false` (`:475-478`) — or if the host
-answered (`:480-489`). Any of those refuses the run
-(`relay-supervisor.sh:363-368`, exit 78, `reason "sandbox-not-enforced"`).
+output, or stderr (`relay-settings.sh:549-553`), if the session did not
+complete cleanly — `.is_error == false` (`:557-560`) — or if the host
+answered (`:562-571`). Any of those refuses the run
+(`relay-supervisor.sh:391-396`, exit 78, `reason "sandbox-not-enforced"`).
 
 Be precise about what the egress half proves.
-`relay_settings_egress_verdict()` (`relay-settings.sh:333-363`) reads
+`relay_settings_egress_verdict()` (`relay-settings.sh:404-472`) reads
 curl's own status code and exit code out of
 `$STATE/work/probe/probe-egress.txt` — by the `code=`/`rc=` markers, never
 "the first digits in the file" — and reports `reachable`, `blocked`, or
@@ -84,12 +84,76 @@ is the paid probe that demonstrates it outright.
 What to run next: read `$STATE/work/probe/probe-read.json` and
 `$STATE/work/probe/probe-read.err`, the probe's own scratch. The result is
 cached by a fingerprint of the settings payload plus `claude --version`
-(`relay-settings.sh:500-504`, stored supervisor-side at
+(`relay-settings.sh:703-707`, stored supervisor-side at
 `$STATE/run/probe.ok`); the fingerprint itself must be a real 40-hex blob id
-or relay refuses outright (`relay-supervisor.sh:347-355`) — an empty one used
+or relay refuses outright (`relay-supervisor.sh:375-383`) — an empty one used
 to read as a cache hit and skip the proof. A CLI upgrade forces a
 fresh proof automatically. A probe that keeps failing after that is a real
 sandbox regression in this CLI build, not something to retry past.
+
+Note `RELAY_SKIP_PROBE=1` exists for relay's own test suite and skips the proof
+entirely, in either mode. It is not a fix and not a supported way to run: it
+gets you a session whose settings were never demonstrated to take effect.
+
+## The probe failed in full-trust mode
+
+With `sandbox_mode: "disabled"` the probe is a different function,
+`relay_settings_probe_disabled()` (`relay-settings.sh:599-701`), and it refuses
+for different reasons — both reported as exit 78 with
+`reason "settings-not-accepted"` rather than `"sandbox-not-enforced"`. There is
+no sandbox to prove, so what it proves is that the payload was accepted at all.
+
+- **`probe.hook missing`, stderr says "SETTINGS PAYLOAD NOT PROVABLY ACCEPTED".**
+  Relay's inline hook never ran, which is what a payload the CLI parsed and
+  discarded looks like. That would mean a run with no context guard and no deny
+  list while the journal claimed otherwise, so relay stops. Check
+  `$STATE/work/probe/probe-read.json` and `probe-read.err`, and confirm
+  `plugins/relay/hooks/relay-ctx.sh` exists and is readable — `/relay-doctor`'s
+  "relay components" section checks exactly that. A CLI upgrade that changed the
+  settings schema is the other candidate.
+
+  There is a third cause that is not relay's fault at all: **the probe session
+  refused the prompt.** The marker only appears after a tool call, so a model
+  that declines to run any command leaves exactly the same evidence as a dropped
+  payload. Read `$STATE/work/probe/probe-read.json`'s `result` field — a refusal
+  says so in plain prose, and `permission_denials` will be `0` because nothing
+  was ever attempted. This was observed for real while building the probe
+  (`docs/security.md`, finding 7): scratch filenames that read as bait invite it.
+  Relay's own probe scratch is deliberately mundane, so if you see this on an
+  unmodified relay, re-run once before digging further.
+- **`probe.trust-canary unreadable`, stderr says "reads are still confined".**
+  The payload was accepted (the hook fired) but a file relay could read outside
+  the sandbox was still unreadable inside the probe session, so
+  `sandbox.enabled: false` did not take effect as configured. Relay refuses
+  rather than run something that is neither mode: you asked for full trust and
+  would silently get confinement.
+
+`probe.egress` is journaled in this mode and never refuses. Seeing
+`blocked mode=disabled` on a machine with no network is expected and means
+nothing about the mode.
+
+If you did not intend full trust, the fix is `sandbox_mode` in
+`$STATE/config.json` — check it, set it back to `enforced`, and resume. Config
+is read once at supervisor startup, so an edit mid-run does nothing until the
+next launch.
+
+## A full-trust run halted on guardrail-drift
+
+What you see: exit 20, `reason "guardrail-drift"`, and the flagged handoff line
+is about the sandbox being off — which is true and was your decision.
+
+Relay does not weaken that filter in full-trust mode, deliberately: with the
+sandbox gone it is one of the few rails left, and a filter that switches off in
+the highest-blast-radius mode is worth very little. The detector needs a
+permission word and a danger word on the same line, so a session that writes
+"the user approved disabling the sandbox" trips it while "this run is full-trust
+mode" does not.
+
+The fix is vocabulary, not configuration. `/relay-init` writes the phrase
+"full-trust mode" into RUN.md's Guardrails section precisely so sessions echo
+something accurate that does not match; if your RUN.md predates that, reword it
+there. Read the flagged handoff first — the halt is cheap and the alternative
+failure mode (a real relaxation slipping through) is not.
 
 ## Every session hands off immediately
 
