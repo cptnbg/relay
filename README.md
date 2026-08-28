@@ -14,6 +14,11 @@ quality degrades. The usual fix is to ask for a handoff prompt, `/clear`, paste
 it back, and continue. Relay is the thing that types `/clear` and pastes the
 handoff, so a build advances while you are asleep.
 
+Sessions run under an OS sandbox by default. When the work genuinely needs a
+live machine — deploying, operating a server, reaching a host over SSH — one
+consented per-project opt-in turns that sandbox off; see
+[full-trust mode](#work-that-needs-the-network-full-trust-mode).
+
 ---
 
 ## Read this before you run it
@@ -101,6 +106,24 @@ delivered per-invocation, so nothing relay installs runs in your other sessions.
 /plugin install relay@relay
 ```
 
+The install command is unchanged in 1.0.0. **Upgrading to it is not a silent
+step**, though, and one thing is required of you:
+
+```
+/relay-init                       # per project, once, after upgrading
+```
+
+1.0.0 changed the consent notice — it now has to describe full-trust mode — and
+consent is recorded as a hash of the exact text you accepted. So every project
+initialised under 0.1.0 consented to wording that no longer exists, and
+`/relay-doctor` fails closed on that with *"the consent notice has changed since
+consent was recorded"* until you re-run `/relay-init` and accept the current
+terms. That is the mechanism doing its job: the terms changed, so your agreement
+to the old ones is not carried over. Nothing else about an existing project
+needs touching, and projects stay in `enforced` mode unless you choose otherwise.
+
+Relay never auto-updates. Upgrading is deliberate, after reading the diff.
+
 ## Verify what you installed
 
 Release tags are signed. Before you trust one:
@@ -142,6 +165,42 @@ something you do deliberately, after reading the diff.
 requirements, anything the plan defers to an owner — so the run does not stall
 at 3am on a question you could have answered up front. Answers are recorded as
 decisions no later session may re-ask.
+
+### Work that needs the network: full-trust mode
+
+By default a session cannot SSH anywhere, cannot reach a host outside the
+allowlist, and cannot read `~/.ssh`. For building and testing a repository that
+is the right posture. For *operating* something — deploying, driving a server,
+probing infrastructure — it is a wall, and no amount of configuration climbs it.
+
+`/relay-init` therefore asks how much you trust the run:
+
+```
+sandbox_mode: enforced   # default — OS sandbox on: reads confined, egress allowlisted
+sandbox_mode: disabled   # full trust — NO sandbox: any host, any readable file
+```
+
+Pick `disabled` and sessions can `ssh` to your machines, curl anything, and read
+whatever your user account can read, including your keys. Relay still never
+pushes to a git remote, and still never passes
+`--dangerously-skip-permissions` — but nothing else confines the run.
+
+It is one config key, so you can also set it directly and resume:
+
+```
+jq '.sandbox_mode = "disabled"' "$STATE/config.json" > tmp && mv tmp "$STATE/config.json"
+/relay-stop        # config is read once at startup
+/relay-resume
+```
+
+Relay makes the mode hard to be wrong about. It is recorded in `state.json`,
+`/relay-status` announces it as its first line, `/relay-doctor` warns on every
+run, and switching modes discards the cached sandbox proof so the next start
+re-proves from scratch. The acceptance probe still runs — it just proves a
+different thing (see "You can switch the sandbox off, deliberately" above).
+
+Use it for a repository you would trust with your SSH keys, and `enforced` for
+everything else. The choice is per project, not global.
 
 ## How it works
 
