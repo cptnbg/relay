@@ -6,6 +6,63 @@ recorded user consent.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-08-29
+
+Findings from a three-reviewer audit of 1.0.0. No commitment is relaxed and no
+consent is invalidated: the notice text is unchanged, so existing projects are
+unaffected beyond the 1.0.0 re-consent they already owe.
+
+### Fixed
+- **The guardrail-drift filter halted healthy runs on the word "token".**
+  `GUARDRAIL_PERM_RE` carried an unanchored `ok(ay)?`, which matches the
+  substring in *token, hook, broken, looked, took, cookie* — and `token` is
+  itself a danger word, so one ordinary word satisfied both AND-ed patterns. A
+  handoff reading "reduced the token count" ended an unattended run at session 1
+  with a BLOCKED.md accusing the model of prompt injection. Relay's own
+  vocabulary made it the worst case; relay could not have built itself. `ok` is
+  now word-anchored (POSIX-ERE, not `\b`, which BSD and GNU disagree about). The
+  other stems stay unanchored so "allowed"/"enabling"/"approves" still match.
+  Pre-existing since 0.1.0.
+- **A stale hook marker could make the full-trust probe pass on a dropped
+  payload.** `relay_settings_probe_disabled` cleared its scratch with an
+  unchecked `rm -rf` — the one unchecked call in the function, guarding the one
+  assertion the proof rests on. A session could plant `run/hook.alive` and chmod
+  its parent 0555: the `rm` then fails while `mkdir -p` and `: >` still return 0,
+  so setup looked clean and the next probe read a pre-planted "proof". The
+  result was a cached `probe.ok` and an unattended full-trust run with no deny
+  list and no context guard, journal reporting the payload proven accepted. The
+  removal is now checked and the marker's absence asserted.
+- **Five state-dir deny rules had a `Write` rule but no `Edit` twin**
+  (`locks/**`, `priv/**`, `run/**`, `sessions/**`, `handoffs/**`), so relay's own
+  state — including the probe cache — was reachable with the Edit tool alone in
+  full-trust mode. Both halves are now emitted, matching the single-file rules.
+- **The probe cache is no longer trusted or written in full-trust mode.**
+  `$STATE/run/probe.ok` is session-writable once the sandbox is off, so it is
+  dropped on entry and never refreshed; every full-trust start re-proves. See
+  `docs/security.md` for the residual this does not close.
+- A trailing slash on the work dir aimed the state-file deny rules at the work
+  dir itself instead of the state root. Both that and the no-parent case are
+  handled before the strip.
+
+### Changed
+- The mock CLI now enforces the same preconditions as the real hook before
+  writing `hook.alive`, and exits loudly when they are missing. Four separate
+  mutations of the full-trust probe previously left the whole suite green while
+  making `sandbox_mode: disabled` refuse every run in production.
+- `test/lint/probe0-sandbox-off.sh`: fresh session ids per run (hardcoded ones
+  made every re-run fail as "already in use", with misleading guidance); a third
+  case sending a genuinely invalid payload, which is the inference production
+  actually relies on; and `timeout` used only when present, since CI asserts it
+  is absent on macOS.
+
+### Added
+- `c151` — a benign-prose corpus through the drift filter, plus a real set of
+  negative controls in the startup self-test. The previous single control passed
+  only by accident of vocabulary.
+- `c237` (stale marker refused), `c238` (probe session errored — assertion (a)
+  had no coverage), `c239` (`allow_domains` inert but still validated in
+  full-trust mode). New mock probe mode `errored`.
+
 ## [1.0.0] - 2026-08-26
 
 MAJOR because it relaxes a `SECURITY.md` design commitment (#4). Recorded
@@ -42,8 +99,11 @@ re-accepted. That is the mechanism working as designed, not a regression.
   remaining deny-list entries stop accidents rather than intent once the sandbox
   is gone.
 - In `disabled` mode the deny list keeps only the never-push entries and the
-  write-persistence guards; operational commands, credential reads and the web
-  tools are all permitted.
+  write-persistence guards; operational commands and credential reads are
+  permitted. `WebFetch`/`WebSearch` are NOT: dropping their deny entry permits
+  nothing, because they were never in `permissions.allow` and `dontAsk` refuses
+  anything unlisted. (Corrected in 1.0.1 — as written this overstated what the
+  release loosened.)
 
 ### Unchanged, deliberately
 - The `enforced` payload is byte-for-byte identical, so existing probe caches

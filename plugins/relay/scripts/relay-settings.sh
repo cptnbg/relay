@@ -216,10 +216,15 @@ Edit($_dfm_state/journal.log)
 Write($_dfm_state/INBOX.md)
 Edit($_dfm_state/INBOX.md)
 Write($_dfm_state/locks/**)
+Edit($_dfm_state/locks/**)
 Write($_dfm_state/priv/**)
+Edit($_dfm_state/priv/**)
 Write($_dfm_state/run/**)
+Edit($_dfm_state/run/**)
 Write($_dfm_state/sessions/**)
+Edit($_dfm_state/sessions/**)
 Write($_dfm_state/handoffs/**)
+Edit($_dfm_state/handoffs/**)
 EOF
     fi
   else
@@ -254,12 +259,19 @@ relay_settings_build() {
     *) return 1 ;;
   esac
   # $_work is $STATE/work; its parent is the supervisor-only state root. Derived
-  # by parameter expansion (fork-free, no dirname dependency). A $_work with no
-  # slash in it has no parent to name, and `%/*` would return it unchanged —
-  # which would aim the state-file deny rules at the work dir itself. Emit no
-  # state rules at all rather than confidently wrong ones.
-  _state_root="${_work%/*}"
-  [ "$_state_root" = "$_work" ] && _state_root=""
+  # by parameter expansion (fork-free, no dirname dependency). Two inputs would
+  # otherwise produce confidently WRONG rules rather than none, so both are
+  # handled before the strip: a trailing slash ("/s/work/") makes `%/*` yield
+  # the work dir itself, and a $_work with no slash at all has no parent to name
+  # and `%/*` returns it unchanged. Either way the state-file deny rules would
+  # end up aimed inside the session-writable work dir while the real state files
+  # one level up went unguarded. Emit no state rules at all instead.
+  _state_root="$_work"
+  while [ "$_state_root" != "${_state_root%/}" ]; do _state_root="${_state_root%/}"; done
+  _state_root="${_state_root%/*}"
+  case "$_state_root" in
+    "$_work"|"") _state_root="" ;;
+  esac
 
   # api.anthropic.com is required or the session cannot talk to the API at all.
   #
@@ -616,13 +628,36 @@ relay_settings_probe_disabled() {
   # probe, which sets none of them). hook.alive lands under RELAY_DIR/run.
   _dp_sid=$(relay_uuid) || return 1
   _dp_hookdir="$_dp_scratch/probe-hook"
-  rm -rf "$_dp_hookdir"
-  mkdir -p "$_dp_hookdir/run" || return 1
-  : > "$_dp_hookdir/.relay" || return 1
 
   _dp_rand=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -cd 'a-f0-9')
   [ -n "$_dp_rand" ] || _dp_rand="p$$x$(date +%s 2>/dev/null)"
   _dp_value="relayprobe${_dp_rand}"
+
+  # hook.alive is the ONLY thing separating "payload accepted" from "payload
+  # silently dropped", and this scratch lives under $STATE/work, which every
+  # session can write. Its freshness therefore has to be PROVEN, not assumed.
+  #
+  # With an unchecked `rm -rf`, it was not: a session could plant the marker and
+  # chmod its parent 0555, after which `rm` fails (unlink needs write permission
+  # on the containing directory) while the following `mkdir -p` and `: >` both
+  # still return 0 — so setup looked clean and the next probe read a pre-planted
+  # "proof", passing on a dropped payload. That is the exact outcome this
+  # function exists to prevent, so both steps below are load-bearing: check the
+  # removal, then assert the marker is genuinely gone.
+  #
+  # The name stays `hook.alive` rather than becoming per-probe random: it is a
+  # fixed contract with relay-ctx.sh (:183,:187). Randomising it would buy
+  # protection against a concurrent writer, and there is none — the supervisor
+  # holds an exclusive run lock and no session is in flight during preflight.
+  if ! rm -rf "$_dp_hookdir" 2>/dev/null || [ -e "$_dp_hookdir/run/hook.alive" ]; then
+    relay_journal "probe.scratch-unclean" "$_dp_hookdir"
+    printf 'relay: probe scratch could not be cleared; refusing to run.\n' >&2
+    printf 'relay: a stale hook marker would be indistinguishable from proof.\n' >&2
+    printf 'relay: inspect and remove: %s\n' "$_dp_hookdir" >&2
+    return 1
+  fi
+  mkdir -p "$_dp_hookdir/run" || return 1
+  : > "$_dp_hookdir/.relay" || return 1
 
   rm -rf "$_dp_work"
   rm -f "$_dp_netfile" "$_dp_readproof"

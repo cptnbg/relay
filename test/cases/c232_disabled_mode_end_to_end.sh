@@ -39,13 +39,12 @@ assert_json "$STATE/state.json" '.sandbox_mode' "disabled" "c232_state_records_m
 assert_json "$RELAY_MOCK_DIR/flags-last.json" \
   '(.settings | fromjson | .sandbox.enabled) == false' "true" "c232_payload_sandbox_off"
 
-# The passing fingerprint is cached (40-hex).
-assert_file "$STATE/run/probe.ok" "c232_probe_cache_written"
-FP=$(tr -d '\n' < "$STATE/run/probe.ok")
-case "$FP" in
-  [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) : ;;
-  *) _assert_fail "c232_probe_cache_is_40_hex: got [$FP]" ;;
-esac
+# The proof is NOT cached in full-trust mode, deliberately. $STATE/run/probe.ok
+# is reachable from Bash once the sandbox is off, so a session could author the
+# very file the next start would read as evidence. Relay drops it on entry and
+# never refreshes it here: every full-trust start re-proves, and one haiku probe
+# is the price of not trusting session-writable evidence.
+assert_no_file "$STATE/run/probe.ok" "c232_probe_not_cached_in_trust_mode"
 
 # The probe ran once in `open` mode and did not consume a session behaviour.
 PROBECNT=$(grep -c 'probe mode=open' "$RELAY_MOCK_DIR/probe.log")
