@@ -170,10 +170,51 @@ fi
 #       dropped      — canary readable + egress open but NO hook.alive
 #                      (payload silently ignored; relay must refuse to run)
 #       confined     — read denied but hook.alive written
+#       errored      — the probe session itself failed (is_error:true), no
+#                      evidence files at all; only assertion (a) catches it
 #                      (enabled:false not honoured; relay must refuse to run)
 #     Probe invocations do NOT consume a RELAY_MOCK_SCRIPT behaviour and do
 #     not touch the invocation counter: the probe is preflight, not a session.
 # ---------------------------------------------------------------------------
+# Simulate the inline PostToolUse hook writing its liveness marker — but only
+# under the SAME preconditions relay-ctx.sh actually enforces, and exit loudly
+# when they are missing.
+#
+# This mock used to write the marker on `[ -n "$RELAY_DIR" ]` alone, which made
+# it a rubber stamp: four separate mutations of the probe (deleting the .relay
+# marker write, the RELAY_SESSION_ID export, the --session-id flag, or making
+# the id non-UUID) each left the whole suite green while making
+# sandbox_mode=disabled refuse EVERY run in production. Fail-closed, so never a
+# security hole, but a dead feature with a passing suite — exactly the class of
+# "test that passes for the wrong reason" this harness exists to prevent.
+# Mirrors relay-ctx.sh:52-88 (G1/G2, G3, G4/G5).
+probe_fire_hook() {
+  if [ -z "${RELAY_SESSION_ID:-}" ]; then
+    printf 'MOCK-FATAL: probe did not export RELAY_SESSION_ID; the real hook would be inert\n' >&2
+    exit 96
+  fi
+  case "$RELAY_SESSION_ID" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) : ;;
+    *)
+      printf 'MOCK-FATAL: RELAY_SESSION_ID is not UUID-shaped (%s); the real hook would be inert\n' "$RELAY_SESSION_ID" >&2
+      exit 96 ;;
+  esac
+  # G3: the real hook compares the env id against the id in its stdin payload,
+  # which the CLI populates from --session-id. No flag, no match, no marker.
+  if [ "${session_id:-}" != "$RELAY_SESSION_ID" ]; then
+    printf 'MOCK-FATAL: --session-id (%s) does not match RELAY_SESSION_ID (%s); the real hook would be inert\n' \
+      "${session_id:-<unset>}" "$RELAY_SESSION_ID" >&2
+    exit 96
+  fi
+  if [ -z "${RELAY_DIR:-}" ] || [ ! -d "${RELAY_DIR:-}" ] || [ ! -f "${RELAY_DIR:-}/.relay" ]; then
+    printf 'MOCK-FATAL: RELAY_DIR (%s) is not a directory carrying a .relay marker; the real hook would be inert\n' \
+      "${RELAY_DIR:-<unset>}" >&2
+    exit 96
+  fi
+  mkdir -p "$RELAY_DIR/run" 2>/dev/null
+  : > "$RELAY_DIR/run/hook.alive"
+}
+
 case "$prompt_text" in
   "Use the Bash tool to run exactly: cat '"*)
     probe_mode="${RELAY_MOCK_PROBE:-blocked}"
@@ -207,10 +248,7 @@ case "$prompt_text" in
         # Full-trust, healthy: read succeeds, egress open, hook fires.
         cat "$probe_canary" > "$probe_readproof" 2>/dev/null
         [ -n "$probe_netfile" ] && printf 'code=200\nrc=0\n' > "$probe_netfile"
-        if [ -n "${RELAY_DIR:-}" ]; then
-          mkdir -p "$RELAY_DIR/run" 2>/dev/null
-          : > "$RELAY_DIR/run/hook.alive"
-        fi
+        probe_fire_hook
         ;;
       dropped)
         # Payload silently ignored: reads/egress open (no sandbox) but the hook
@@ -221,10 +259,14 @@ case "$prompt_text" in
       confined)
         # enabled:false not honoured: read still denied though the hook fired.
         printf 'cat: %s: Operation not permitted\n' "$probe_canary" > "$probe_readproof"
-        if [ -n "${RELAY_DIR:-}" ]; then
-          mkdir -p "$RELAY_DIR/run" 2>/dev/null
-          : > "$RELAY_DIR/run/hook.alive"
-        fi
+        probe_fire_hook
+        ;;
+      errored)
+        # The probe session itself failed (budget exhausted, model refusal, a
+        # crash). Evidence files stay absent; the envelope reports the error.
+        # Assertion (a) is the only thing that can catch this, and nothing
+        # exercised it before.
+        :
         ;;
       *)
         printf 'MOCK-FATAL: unknown RELAY_MOCK_PROBE mode: %s\n' "$probe_mode" >&2
@@ -233,6 +275,17 @@ case "$prompt_text" in
     esac
     printf 'probe mode=%s canary=%s\n' "$probe_mode" "$probe_canary" \
       >> "$RELAY_MOCK_DIR/probe.log"
+    if [ "$probe_mode" = "errored" ]; then
+      if [ "$output_format" = "json" ]; then
+        jq -nc --arg sid "${session_id:-mock-probe}" \
+          '{type:"result", subtype:"error_max_budget_usd", is_error:true,
+            result:"budget exhausted", session_id:$sid, num_turns:1,
+            total_cost_usd:0.10, stop_reason:"tool_use", permission_denials:[]}'
+      else
+        printf 'ERROR\n'
+      fi
+      exit 0
+    fi
     if [ "$output_format" = "json" ]; then
       jq -nc --arg sid "${session_id:-mock-probe}" \
         '{type:"result", subtype:"success", is_error:false, result:"DONE",

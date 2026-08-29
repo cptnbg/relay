@@ -260,8 +260,23 @@ and never refuses, because `reachable` is the expected result here and `blocked`
 mean an offline machine.
 
 Because the probe cache is keyed by `(payload + CLI version)`, flipping the mode always
-forces a fresh proof; neither mode can ever inherit the other's evidence
-(`test/cases/c235_mode_switch_invalidates_probe_cache.sh`).
+forces a fresh proof. That is a statement about the KEY, not about the file: `probe.ok`
+is session-writable once the sandbox is off, so in `disabled` mode relay neither trusts
+nor writes it — the cache is dropped on entry and every full-trust start re-proves
+(`test/cases/c235_mode_switch_invalidates_probe_cache.sh`,
+`c232_disabled_mode_end_to_end.sh`).
+
+**Residual, not closed.** That still does not stop a hostile full-trust session
+*planting* an enforced-mode fingerprint for a LATER run to find: the session can
+recompute any fingerprint it likes, having `relay-settings.sh`, `jq`, `git` and
+`claude --version` to hand. No in-file scheme fixes this — the attacker computes the
+key and can rewrite any marker meant to flag the exposure — and closing it properly
+needs storage the session cannot reach, which full trust by definition does not
+provide. It is called out separately from the general "state files are convention, not
+boundary" note because of where it lands: it degrades a *later* run in the mode the
+operator switched back to for safety. **After running a project in full trust, delete
+`$STATE/run/probe.ok` before switching back to `enforced`.** The supervisor journals
+`probe.cache-discarded` whenever it drops the cache itself.
 
 The guardrail-drift filter is deliberately **not** relaxed in this mode — it is one of the
 few rails left once the sandbox is gone. RUN.md instead gives sessions the phrase

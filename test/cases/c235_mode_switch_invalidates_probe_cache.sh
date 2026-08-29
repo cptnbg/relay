@@ -48,12 +48,27 @@ assert_rc 0 "$RC2" "c235_disabled_run_completed"
 # The proof was re-taken, not inherited: the disabled probe really ran...
 assert_grep "$RELAY_MOCK_DIR/probe.log" 'probe mode=open' "c235_disabled_probe_served"
 assert_grep "$JOURNAL" 'probe\.hook.fired' "c235_disabled_hook_proof"
-# ...and the cached fingerprint changed with the payload.
-FP_DISABLED=$(tr -d '\n' < "$STATE/run/probe.ok")
-assert_ne "$FP_ENFORCED" "$FP_DISABLED" "c235_fingerprint_changed_with_mode"
+# ...and the enforced run's cached proof was discarded on entry rather than
+# inherited. Asserting absence here is deliberate: reading probe.ok and
+# comparing fingerprints would pass trivially once the file stops existing
+# (`tr` on a missing file yields the empty string, which differs from anything),
+# so the test would keep passing while proving nothing.
+assert_no_file "$STATE/run/probe.ok" "c235_enforced_cache_discarded_by_trust_run"
+assert_grep "$JOURNAL" 'probe\.cache-discarded' "c235_discard_journaled"
+[ -n "$FP_ENFORCED" ] || _assert_fail "c235_enforced_fp_was_cached: run 1 cached nothing"
 
 # Two probe.start lines: one per mode. A cache hit would have skipped the second.
 STARTS=$(grep -c 'probe\.start' "$JOURNAL")
 assert_eq "2" "$STARTS" "c235_probed_once_per_mode"
+
+# The mock's invocation counter is a FILE that outlives run 1, and it is what
+# selects the behaviour from RELAY_MOCK_SCRIPT. Pin the actions log so the reset
+# above is load-bearing: without it run 2 starts at entry 2 ("complete") and
+# this assertion fails, instead of the test passing while silently exercising
+# the wrong behaviour.
+# Line 3 is run 2's first session. With the reset it reads "1 work" (counter
+# restarted, so behaviour 1 of "work,complete"); without it, invocation 3 falls
+# off the end of the script, the last entry repeats, and it reads "3 complete".
+assert_eq "1 work" "$(sed -n 3p "$RELAY_MOCK_DIR/actions")" "c235_run2_started_at_first_behaviour"
 
 exit 0

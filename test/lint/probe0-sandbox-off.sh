@@ -21,6 +21,14 @@ umask 077
 LC_ALL=C
 
 SCRATCH="${1:?usage: probe0-sandbox-off.sh <scratch-dir>}"
+# `timeout` is coreutils, and CI explicitly asserts it is ABSENT on macOS. Left
+# unconditional, the subshell exits 127 before claude runs and this script then
+# reports rc=127/hook=MISSING — whose printed remediation is "the payload shape
+# was rejected". Wrong answer, paid probe. Use it when present, rely on
+# --max-budget-usd when not.
+if command -v timeout >/dev/null 2>&1; then TIMEOUT="timeout 180"
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT="gtimeout 180"
+else TIMEOUT=""; fi
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 HOOK="$ROOT/plugins/relay/hooks/relay-ctx.sh"
 WORK="$SCRATCH/off-work"
@@ -46,10 +54,24 @@ printf '%s\n' "$CANARY_VALUE" > "$CANARY"
 # The hook only acts when RELAY_SESSION_ID is UUID-shaped AND appears in the
 # payload on its stdin AND RELAY_DIR is an absolute dir carrying a .relay
 # marker. Production satisfies all three; so must this probe.
-# One id PER CASE: the CLI refuses to reuse a session id ("already in use"),
-# which silently turned case 2 into a launch failure rather than a control.
-SID_OFF="1e1a97b0-0000-4000-a000-00000000d15a"
-SID_NOHOOKS="1e1a97b0-0000-4000-a000-00000000d15b"
+# A FRESH id per case per run. The CLI refuses to reuse a session id ("already
+# in use"), and a constant would fail only on the SECOND run of this probe —
+# which the header instructs you to do on every release and every CLI bump. The
+# failure is silent in the worst way: the case reports hook=MISSING, and this
+# script's own guidance then tells you the payload shape was rejected. Wrong
+# remediation, on a probe that costs money. Production uses relay_uuid; this has
+# no library to draw on, so it derives the same shape from /dev/urandom.
+_rand_uuid() {
+  _ru=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -cd 'a-f0-9')
+  [ "${#_ru}" -eq 32 ] || { printf 'cannot generate a session id\n' >&2; exit 1; }
+  printf '%s-%s-4%s-a%s-%s\n' \
+    "$(echo "$_ru" | cut -c1-8)"   "$(echo "$_ru" | cut -c9-12)" \
+    "$(echo "$_ru" | cut -c14-16)" "$(echo "$_ru" | cut -c18-20)" \
+    "$(echo "$_ru" | cut -c21-32)"
+}
+SID_OFF=$(_rand_uuid)
+SID_NOHOOKS=$(_rand_uuid)
+SID_INVALID=$(_rand_uuid)
 HOOKDIR="$OUT/hookdir"
 mkdir -p "$HOOKDIR/run"
 : > "$HOOKDIR/.relay"
@@ -57,8 +79,24 @@ mkdir -p "$HOOKDIR/run"
 # $1 = "off"      -> the payload relay sends in sandbox_mode=disabled
 #      "nohooks"  -> same, minus the hooks block (control: proves the marker's
 #                    absence is really evidence, not just a flaky hook)
+#      "invalid"  -> hooks block present but the payload is malformed, so the
+#                    CLI should reject the whole thing. This is the case that
+#                    matters: production infers "no marker => the payload was
+#                    REJECTED", and only this case exercises that direction.
+#                    `nohooks` proves the converse of a different statement.
 mkpayload() {
-  if [ "$1" = "nohooks" ]; then
+  if [ "$1" = "invalid" ]; then
+    # Well-formed JSON, wrong types throughout — the shape a schema change or a
+    # typo would produce, which is the scenario the whole probe exists for.
+    jq -nc --arg hook "$HOOK" '
+      { sandbox: { enabled: "yes", failIfUnavailable: 17 },
+        permissions: { allow: "Bash", deny: { nope: true } },
+        hooks: {
+          PostToolUse: [
+            { hooks: [ { type: "command", command: "bash", args: [ $hook ], timeout: 5 } ] }
+          ]
+        } }'
+  elif [ "$1" = "nohooks" ]; then
     jq -nc '{ sandbox: { enabled: false },
               permissions: { allow: ["Read","Write","Edit","Bash","Glob","Grep"],
                              deny: ["Bash(git push:*)"] } }'
@@ -81,7 +119,7 @@ run_case() { # $1=label $2=payload $3=prompt $4=session-id
   ( cd "$WORK" || exit 1
     RELAY_SESSION_ID="$sid" RELAY_DIR="$HOOKDIR" \
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
-    timeout 180 claude -p "$prompt" \
+    $TIMEOUT claude -p "$prompt" \
       --model haiku \
       --session-id "$sid" \
       --permission-mode dontAsk \
@@ -126,14 +164,19 @@ rm -f "$READPROOF" "$NETFILE"
 run_case "nohooks" "$(mkpayload nohooks)" "$PROMPT" "$SID_NOHOOKS"
 printf 'rc=%s  hook=%s\n' "$(cat "$OUT/nohooks.rc")" "$(cat "$OUT/nohooks.hook")" | tee -a "$RESULTS"
 
+echo "--- case 3: hooks present but payload INVALID (marker MUST be absent) ---" | tee -a "$RESULTS"
+rm -f "$READPROOF" "$NETFILE"
+run_case "invalid" "$(mkpayload invalid)" "$PROMPT" "$SID_INVALID"
+printf 'rc=%s  hook=%s\n' "$(cat "$OUT/invalid.rc")" "$(cat "$OUT/invalid.hook")" | tee -a "$RESULTS"
+
 echo | tee -a "$RESULTS"
 echo "--- result envelopes ---" | tee -a "$RESULTS"
-for l in off nohooks; do
+for l in off nohooks invalid; do
   jq -r '{is_error, subtype, terminal_reason, permission_denials: (.permission_denials|length)}
          | to_entries | map("\(.key)=\(.value|tostring)") | join("  ")' \
      < "$OUT/$l.json" 2>/dev/null | sed "s/^/$l: /" | tee -a "$RESULTS"
 done
-grep -ih 'sandbox' "$OUT"/off.err "$OUT"/nohooks.err 2>/dev/null | head -5 | tee -a "$RESULTS"
+grep -ih 'sandbox' "$OUT"/off.err "$OUT"/nohooks.err "$OUT"/invalid.err 2>/dev/null | head -5 | tee -a "$RESULTS"
 
 echo | tee -a "$RESULTS"
 echo "PASS CRITERIA:" | tee -a "$RESULTS"
@@ -141,6 +184,9 @@ echo "  case1: is_error=false, hook=fired, canary=readable, egress code=200 rc=0
 echo "         (payload accepted AND the sandbox really is off)" | tee -a "$RESULTS"
 echo "  case2: hook=MISSING" | tee -a "$RESULTS"
 echo "         (the marker is real evidence: no hooks in the payload, no marker)" | tee -a "$RESULTS"
+echo "  case3: hook=MISSING" | tee -a "$RESULTS"
+echo "         (THE load-bearing one: a REJECTED payload also yields no marker," | tee -a "$RESULTS"
+echo "          which is the inference production actually makes)" | tee -a "$RESULTS"
 echo | tee -a "$RESULTS"
 echo "If case1 shows canary=unreadable, the CLI did not honour enabled:false and" | tee -a "$RESULTS"
 echo "relay_settings_probe_disabled's assertion (c) is what will catch it." | tee -a "$RESULTS"
