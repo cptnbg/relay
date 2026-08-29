@@ -102,6 +102,28 @@ surviving installation.
 The interview exists so the run does not stall at 3am on a question a human
 could have answered in advance.
 
+**0. Decide first whether this is a re-consent rather than an init.** If all of
+these hold —
+
+- `$STATE/config.json` exists and its `plan_path` resolves to a real file,
+- `$STATE/work/RUN.md` exists,
+- and the reason for running `init` is that `/relay-doctor` reports *"the
+  consent notice has changed since consent was recorded"* (or the user says they
+  are re-running init after upgrading relay),
+
+— then do **step 6 only**. Show the consent notice, take the acceptance, write
+`consent` into the existing `config.json`, run doctor, and stop.
+
+Do not re-interview. Do not rewrite `RUN.md`, and do not rewrite the rest of
+`config.json`. RUN.md accumulates exactly the two things an upgrade must not
+cost anyone: **Decisions already made (DO NOT RE-ASK)**, and the **Course
+corrections** review sessions appended while the run was going. A full init
+overwrites both, the user has no other copy, and the loss is silent — the next
+session simply starts re-asking settled questions. If it is genuinely ambiguous
+which case this is, ask; and if the user does want a full re-init of a project
+that already has a RUN.md, copy it to `$STATE/work/RUN.md.bak` first and tell
+them where it went.
+
 **1. Read everything first.** The named plan in full, including every amendment
 section. Then the project's CLAUDE.md, and any existing `.continue-here.md` or
 `.planning/STATE.md`. Do not skim: the quality of the interview depends on
@@ -118,9 +140,11 @@ knowing what the plan actually demands.
 plus: the model tier (must be `opus`, `sonnet`, or `fable` — the supervisor
 refuses anything else) and its context window, session and total budget caps,
 max sessions, wall-clock cap, review cadence, extra egress domains the build
-needs (`allow_domains`, e.g. a package registry — the sandbox blocks everything
-else), log retention (`keep_sessions`, `keep_days`), and the acceptance command
-that proves the work is done.
+needs (`allow_domains`, e.g. a package registry — under `enforced` the sandbox
+blocks everything not listed; under `disabled` there is no allowlist and the key
+does nothing, though a malformed value still refuses to start), log retention
+(`keep_sessions`, `keep_days`), and the acceptance command that proves the work
+is done.
 
 Also ask for `sandbox_mode`, but only offer the second option when the plan
 genuinely needs it, and never pre-select it:

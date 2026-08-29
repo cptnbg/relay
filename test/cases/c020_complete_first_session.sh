@@ -12,7 +12,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE"
-printf '# RUN\n\nMinimal run: one session should finish the job.\n' > "$STATE/RUN.md"
+mkrunmd "$STATE" 'Minimal run: one session should finish the job.'
 printf '# Plan\n\n1. step one\n' > "$PROJ/plan.md"
 
 cat > "$STATE/config.json" <<'EOF'

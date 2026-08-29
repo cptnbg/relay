@@ -51,6 +51,20 @@ EOF
 EOF
 }
 
+# mkrunmd <state_dir> [first-line-description]
+# Writes the canonical $STATE/work/RUN.md the supervisor requires at preflight,
+# creating work/ if the supervisor has not run yet.
+#
+# The path is the point. RUN.md lives under work/ because sessions must read it
+# and review sessions append to it; most cases used to seed it one level up at
+# $STATE/RUN.md, where nothing reads it, and passed anyway because no guard
+# looked. Centralised here so the location is written down once.
+mkrunmd() {
+  local state="$1" desc="${2:-Minimal run.}"
+  mkdir -p "$state/work"
+  printf '# RUN\n\n%s\n' "$desc" > "$state/work/RUN.md"
+}
+
 # --- internal helpers -------------------------------------------------
 
 # _fx_usage_split <pct> <window>

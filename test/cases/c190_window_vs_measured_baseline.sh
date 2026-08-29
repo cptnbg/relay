@@ -15,7 +15,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/RUN.md"
+mkrunmd "$STATE"
 printf '# Plan\n\n1. step one\n' > "$PROJ/plan.md"
 git -C "$PROJ" add -A >/dev/null 2>&1
 git -C "$PROJ" -c user.name=mock -c user.email=mock@example.com commit -q -m "chore: add plan.md" >/dev/null 2>&1
@@ -46,7 +46,7 @@ PROJ2="$PWD/proj2"
 STATE2="$PWD/state2"
 mkrepo "$PROJ2"
 mkdir -p "$STATE2"
-printf '# RUN\n\nMinimal run.\n' > "$STATE2/RUN.md"
+mkrunmd "$STATE2"
 printf '# Plan\n\n1. step one\n' > "$PROJ2/plan.md"
 git -C "$PROJ2" add -A >/dev/null 2>&1
 git -C "$PROJ2" -c user.name=mock -c user.email=mock@example.com commit -q -m "chore: add plan.md" >/dev/null 2>&1

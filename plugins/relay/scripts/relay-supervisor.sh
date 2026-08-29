@@ -50,9 +50,16 @@ STATE=$(cd "$STATE" 2>/dev/null && pwd) || { mkdir -p "$STATE" && STATE=$(cd "$S
 #            filesystem.allowWrite.
 #   $STATE root + $PRIV — supervisor-only. state.json, journal.log, config.json,
 #            exec.json, locks/, the probe cache, and relay's own git scratch are
-#            OUT of allowWrite, so a prompt-injected session cannot forge a
-#            COMPLETE by rewriting commits_at_start, truncate the audit journal,
-#            delete the run lock, or plant a git hook relay later executes.
+#            OUT of allowWrite, so under sandbox_mode=enforced a prompt-injected
+#            session cannot forge a COMPLETE by rewriting commits_at_start,
+#            truncate the audit journal, delete the run lock, or plant a git hook
+#            relay later executes.
+#            Under sandbox_mode=disabled there is no allowWrite and no sandbox:
+#            the deny rules bind the Write/Edit TOOLS only, and Bash ignores
+#            them, so every file named above is a convention there rather than a
+#            boundary. The one check that still holds in full trust is the
+#            acceptance command's, anchored to a value captured in memory at
+#            preflight. See docs/security.md.
 WORK="$STATE/work"
 PRIV="$STATE/priv"
 # NOTE: locks/ must exist before relay_lock runs. relay_lock acquires by atomic
@@ -80,6 +87,48 @@ cfg() { # key default
   _v=$(jq -r --arg k "$1" '.[$k] // empty' "$CONFIG" 2>/dev/null)
   [ -n "$_v" ] && printf '%s' "$_v" || printf '%s' "$2"
 }
+
+# ---------------------------------------------------------------------------
+# State. Written atomically after every transition so a supervisor crash is
+# resumable rather than fatal.
+# ---------------------------------------------------------------------------
+state_get() { jq -r --arg k "$1" '.[$k] // empty' "$STATE/state.json" 2>/dev/null; }
+state_set() { # key value [key value ...]
+  _tmp=$(jq -c '.' "$STATE/state.json" 2>/dev/null) || _tmp='{}'
+  [ -n "$_tmp" ] || _tmp='{}'
+  while [ $# -ge 2 ]; do
+    _tmp=$(printf '%s' "$_tmp" | jq -c --arg k "$1" --arg v "$2" '.[$k]=$v') || return 1
+    shift 2
+  done
+  printf '%s\n' "$_tmp" | relay_atomic_write "$STATE/state.json" || return 1
+  return 0
+}
+
+[ -f "$STATE/state.json" ] || printf '{}\n' > "$STATE/state.json"
+
+RUN_ID=$(state_get run_id)
+if [ -z "$RUN_ID" ]; then
+  RUN_ID=$(relay_uuid) || RUN_ID="run-$$"
+  state_set run_id "$RUN_ID" status "starting"
+fi
+export RELAY_RUN_ID="$RUN_ID"
+
+# `sandbox_mode` and `reason` describe THIS invocation, and `state_set` MERGES
+# rather than replaces — so left alone they survive into runs they say nothing
+# true about. A project that ran once in full trust, was set back to `enforced`
+# and then failed preflight kept `sandbox_mode: disabled` in state.json, and
+# /relay-status announced "FULL-TRUST MODE — the sandbox is OFF" for an enforced
+# project that was not even running. Same for a `reason` left over from the last
+# halt being attached to this run's failure.
+#
+# Which is why this whole block sits HERE, above every config guard, rather than
+# next to the payload build where the mode is validated: the refusals that leave
+# a stale value are the early ones — a missing plan, a non-numeric cap — and
+# anything written after them is written too late to help. The value recorded is
+# the raw configured one, before validation, because that is the honest answer to
+# "what is this project set to"; nothing branches on state.json, and an invalid
+# mode refuses at preflight regardless.
+state_set sandbox_mode "$(cfg sandbox_mode enforced)" reason ""
 
 # A 40-hex git blob id, and nothing else. Used wherever a recorded hash gates a
 # decision: an empty or mangled hash must read as "unverifiable", never as a
@@ -134,6 +183,38 @@ if [ -n "$_relay_bad_num" ]; then
   exit "$EX_PREFLIGHT"
 fi
 unset _relay_bad_num _nv _fv
+
+# Numeric is not the same as usable. Zero passes every check above and bricks
+# the run at session 1: the two circuit breakers are tested UNCONDITIONALLY,
+# outside the unproductive branch, so `stall_limit: 0` makes `[ 0 -ge 0 ]` true
+# after the first session however productive it was, and `fastfail_limit: 0`
+# does the same on the fast-fail side. Both exit before the second session ever
+# starts, with a journal that reports a stall that never happened. `review_every`
+# already refuses to act below 1; these two had no floor at all.
+_relay_zero=""
+for _zv in "stall_limit=$STALL_LIMIT" "fastfail_limit=$FASTFAIL_LIMIT"; do
+  [ "${_zv#*=}" -ge 1 ] 2>/dev/null || _relay_zero="$_relay_zero ${_zv%%=*}"
+done
+if [ -n "$_relay_zero" ]; then
+  relay_journal "config.limit-below-one" "$_relay_zero"
+  printf 'relay: these config.json values must be at least 1:%s\n' "$_relay_zero" >&2
+  printf 'relay: at 0 the circuit breaker trips after the first session, productive\n' >&2
+  printf 'relay: or not, and the run ends having done nothing.\n' >&2
+  exit "$EX_PREFLIGHT"
+fi
+unset _relay_zero _zv
+
+# A limit of exactly 1 is legal and sometimes wanted — halt on the first
+# unproductive session — but it silently removes the escalation that fires one
+# session BEFORE the breaker, because the streak is already at the limit by the
+# time it is tested. Journal it rather than refuse it: it is a choice, not a
+# mistake, and a run that never escalates should say so somewhere.
+for _ev in "stall_limit=$STALL_LIMIT" "fastfail_limit=$FASTFAIL_LIMIT"; do
+  [ "${_ev#*=}" -eq 1 ] 2>/dev/null && \
+    relay_journal "config.no-escalation-window" "${_ev%%=*}=1; the pre-halt fable escalation cannot fire"
+done
+unset _ev
+
 # The acceptance command is an argv ARRAY, never a shell string: if a shell is
 # wanted the user writes ["bash","-lc",...] and sees it at approval time. The
 # shape is enforced here rather than assumed — a string like "npm test" would
@@ -176,6 +257,22 @@ if [ ! -f "$PLAN_PATH" ]; then
   relay_journal "preflight.plan-missing" "$PLAN_PATH"
   printf 'relay: plan file does not exist: %s\n' "$PLAN_PATH" >&2
   printf 'relay: set plan_path in %s to the canonical plan file (see /relay-init).\n' "$CONFIG" >&2
+  exit "$EX_PREFLIGHT"
+fi
+
+# RUN.md is the other half of the plan, and the symmetric case to the guard
+# above with the same overnight failure mode. The plan says WHAT to build;
+# RUN.md carries the mission, the acceptance criteria, the guardrails and the
+# decisions no session may re-ask. build_prompt tells every session to read it
+# FIRST, so without it a run does not degrade visibly — it proceeds all night
+# with no guardrails and no acceptance criteria while every journal line looks
+# healthy. Canonical path is $STATE/work/RUN.md: under work/ because sessions
+# must read it and review sessions append to it.
+if [ ! -f "$WORK/RUN.md" ]; then
+  relay_journal "preflight.run-md-missing" "$WORK/RUN.md"
+  printf 'relay: RUN.md does not exist: %s\n' "$WORK/RUN.md" >&2
+  printf 'relay: run /relay-init — it writes RUN.md, which every session reads before\n' >&2
+  printf 'relay: anything else. A run without it has no acceptance criteria to meet.\n' >&2
   exit "$EX_PREFLIGHT"
 fi
 
@@ -231,32 +328,6 @@ for _tier in opus sonnet fable; do
   fi
 done
 unset _tier _w
-
-
-# ---------------------------------------------------------------------------
-# State. Written atomically after every transition so a supervisor crash is
-# resumable rather than fatal.
-# ---------------------------------------------------------------------------
-state_get() { jq -r --arg k "$1" '.[$k] // empty' "$STATE/state.json" 2>/dev/null; }
-state_set() { # key value [key value ...]
-  _tmp=$(jq -c '.' "$STATE/state.json" 2>/dev/null) || _tmp='{}'
-  [ -n "$_tmp" ] || _tmp='{}'
-  while [ $# -ge 2 ]; do
-    _tmp=$(printf '%s' "$_tmp" | jq -c --arg k "$1" --arg v "$2" '.[$k]=$v') || return 1
-    shift 2
-  done
-  printf '%s\n' "$_tmp" | relay_atomic_write "$STATE/state.json" || return 1
-  return 0
-}
-
-[ -f "$STATE/state.json" ] || printf '{}\n' > "$STATE/state.json"
-
-RUN_ID=$(state_get run_id)
-if [ -z "$RUN_ID" ]; then
-  RUN_ID=$(relay_uuid) || RUN_ID="run-$$"
-  state_set run_id "$RUN_ID" status "starting"
-fi
-export RELAY_RUN_ID="$RUN_ID"
 
 # A per-run nonce fences untrusted handoff text in the prompt. Regenerated each
 # run so a handoff cannot carry a stale fence marker forward.
@@ -348,6 +419,10 @@ case "$SANDBOX_MODE" in
     exit "$EX_PREFLIGHT" ;;
 esac
 relay_journal "sandbox.mode" "$SANDBOX_MODE"
+# Re-recorded now that it is validated. The raw configured value went in at the
+# top (see the state block); this makes state.json agree with what the payload
+# is actually about to be built from.
+state_set sandbox_mode "$SANDBOX_MODE"
 # The probe's refusal wording is mode-specific: enforced proves the sandbox
 # confines; disabled proves the payload was accepted at all. Resolved here so
 # the probe block below stays a single pair of lines.
@@ -764,16 +839,23 @@ verify_complete() {
   # work is finished hit that wall. Conflating "this run made no commits" with
   # "no work was done" is the bug.
   if [ -n "$ACCEPT_CMD_JSON" ] && [ "$ACCEPT_CMD_JSON" != "null" ]; then
-    # Approval integrity, verified immediately before the command runs. The
-    # state split (A1) already made exec.json supervisor-only — it is not in
-    # the sandbox's allowWrite — so a sandboxed session cannot rewrite it; the
+    # Approval integrity, verified immediately before the command runs. Under
+    # sandbox_mode=enforced the state split (A1) keeps exec.json out of the
+    # sandbox's allowWrite, so a sandboxed session cannot rewrite it and the
     # remaining tamper vector is an out-of-band edit between /relay-approve and
-    # this moment. Re-read the file as it exists NOW (catching mid-run edits,
-    # not just pre-start ones) and require that (a) the argv on disk is still
-    # the argv captured at preflight, and (b) its canonical-JSON git blob hash
-    # equals the recorded exec_hash. Any disagreement is a security stop for a
-    # human, not an ordinary rejection: something rewrote a command relay is
-    # about to execute.
+    # this moment. Under sandbox_mode=disabled that is NOT true: there is no
+    # sandbox, the Write/Edit deny rule on exec.json does not bind Bash, and the
+    # session can rewrite the file and recompute the hash to match.
+    #
+    # Which is exactly why (a) below is not redundant with (b). Re-read the file
+    # as it exists NOW (catching mid-run edits, not just pre-start ones) and
+    # require that (a) the argv on disk is still the argv captured at preflight
+    # — an in-memory anchor that predates every session and no session can
+    # reach — and (b) its canonical-JSON git blob hash equals the recorded
+    # exec_hash. Rewriting the command and its hash together on disk still fails
+    # (a), so this check survives full trust while the file's protection does
+    # not. Any disagreement is a security stop for a human, not an ordinary
+    # rejection: something rewrote a command relay is about to execute.
     _ex_now=$(jq -c '.acceptance_cmd // empty' "$STATE/exec.json" 2>/dev/null)
     _ex_rec=$(jq -r '.exec_hash // empty' "$STATE/exec.json" 2>/dev/null)
     _ex_hash=$(printf '%s\n' "$_ex_now" | git hash-object --stdin 2>/dev/null)

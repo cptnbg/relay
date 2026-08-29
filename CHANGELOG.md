@@ -6,6 +6,98 @@ recorded user consent.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-29
+
+Documentation correctness, plus the four small code items deferred out of the
+1.0.0 audit. No commitment is relaxed, and **the consent notice text is
+unchanged**, so no project that has already consented under 1.0.x owes a new
+acceptance.
+
+### Added
+- **`test/lint/citations.sh` — every `file:line` in every `.md` is now gated.**
+  Relay's documentation cites its own source by line, and those coordinates rot
+  on every edit that adds a line above them. The gate that existed covered
+  `docs/exit-codes.md` alone, which is exactly why that was the only file in the
+  tree without rot: a gate over one document licenses the other six. The new
+  linter resolves each citation, checks the range is inside the file, and then
+  checks the CLAIM — at least one code token from the phrase the citation is
+  attached to has to appear inside the cited lines, so a correct line number on
+  a sentence about different code fails too. It runs in CI as its own step and
+  inside `publish-check.sh`. 522 citations are verified; **the stale ones it
+  found on its first run are fixed in this release**, re-derived from the
+  current sources rather than shifted by an offset table.
+- A `<!-- citations-default: path -->` marker, so a document whose bare
+  `**Line NNN**` references all belong to one file can say so once instead of
+  the gate inferring it from whichever file was mentioned last.
+- **RUN.md is now a preflight guard.** A run with no `$STATE/work/RUN.md` has no
+  mission, no acceptance criteria and no guardrails, and every session is told
+  to read it first — so its absence did not fail visibly, it produced a night of
+  work against nothing. Symmetric with the existing `plan.md` guard and refused
+  the same way (exit 78, `preflight.run-md-missing`). Most of the test suite had
+  been seeding RUN.md one level up at `$STATE/RUN.md`, where nothing reads it,
+  and passing; the fixture now writes the canonical path.
+
+### Fixed
+- **`stall_limit: 0` and `fastfail_limit: 0` bricked a run at session 1.** Both
+  are numeric, so both passed validation. Both circuit breakers are tested
+  unconditionally rather than only on the unproductive path, so `[ 0 -ge 0 ]`
+  was true after the first session however productive it was: the run ended
+  `EX_STALLED` with a journal reporting a stall that never happened. Values
+  below 1 now refuse at preflight (`config.limit-below-one`). A limit of exactly
+  1 is still allowed — it silently removes the escalation that fires one session
+  before the breaker, so that is journaled rather than refused.
+- **`/relay-status` could announce "FULL-TRUST MODE" for an enforced project
+  that was not running.** `state_set` merges, and `sandbox_mode` was written
+  only after every preflight exit — so a project that ran once in full trust,
+  was set back to `enforced` and then failed preflight kept the old value.
+  `sandbox_mode` and `reason` are now written at the top of the run, above every
+  config guard, from that invocation's own config. Over-warning only; the
+  dangerous direction was refuted.
+
+### Changed — documentation
+- **`docs/architecture.md` no longer contradicts `SKILL.md` and
+  `docs/security.md` about the trust zones.** It stated as absolutes that a
+  session "cannot forge a COMPLETE", "cannot truncate the audit journal",
+  "cannot delete the run lock" and "cannot rewrite `exec.json`". All four are
+  false under `sandbox_mode: "disabled"`: there is no `allowWrite` there, and the
+  deny rules bind the Write/Edit tools while Bash ignores them. §4 now says which
+  mode each claim belongs to and adds the four-for-four correction; the
+  allowWrite paragraph and the context-guard section are qualified the same way.
+- **`--hardened` mode does not exist.** `docs/security.md`'s standing rule 5 said
+  `--bare` was used "only in `--hardened` mode" — a phantom, and one that now
+  reads as a live exemption for full trust because `sandbox_mode` gives relay a
+  real mode axis. Deleted, along with the matching comment in
+  `relay-settings.sh`. `--bare` is refused unconditionally, in every mode.
+- **The refusal-to-run guarantee is stated with its exceptions.**
+  `RELAY_SKIP_PROBE=1` and `RELAY_SKIP_SELFTEST=1` defeat it, and the second was
+  documented nowhere. Both are the test suite's, neither is readable from config
+  or settable by a repository, and `SECURITY.md`, the README and
+  `docs/troubleshooting.md` now say so.
+- **Full trust's cost is itemised rather than implied.** `docs/security.md` gains
+  a section on what the open deny list actually gives up: the macOS keychain via
+  `security`, uncommitted work via git's own destructive commands, persistence
+  via `crontab`/`launchctl`, and `~/.zshenv`, which the retained rc guards do not
+  cover. These are accepted risks, recorded so the choice is informed.
+- **Upgrading no longer costs you RUN.md.** `/relay-init` rewrote
+  `$STATE/work/RUN.md` and `config.json`, discarding accumulated "Decisions
+  already made (DO NOT RE-ASK)" and review-session "Course corrections" — and
+  every existing project has to re-run it for the 1.0.0 consent notice. `init`
+  now detects an already-initialised project and, when only the notice changed,
+  takes the acceptance and stops.
+- README and `SECURITY.md` disagreed about how `sandbox_mode` is selected: one
+  said it is recorded at `/relay-init`, the other also documented editing
+  `config.json` directly, which works and bypasses init. Both now say the same
+  thing — it is a config key, and init is where you are asked and the only path
+  that records consent.
+- `allow_domains` is documented as inert under `disabled`: still validated, so a
+  typo still refuses, and still journaled as `sandbox.extra-domains`, which reads
+  as "configured", not "applied".
+- The README's `jq` snippet wrote its temp file into the caller's working
+  directory; `CONTRIBUTING.md` cited the wrong `ci.yml` lines for the bash-3.2
+  rerun and described `probe0-sandbox-off.sh` as two invocations when it is
+  three; `docs/architecture.md` claimed a supervisor line count that had been
+  wrong for two releases.
+
 ## [1.0.1] - 2026-08-29
 
 Findings from a three-reviewer audit of 1.0.0. No commitment is relaxed and no

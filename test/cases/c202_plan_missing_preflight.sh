@@ -7,7 +7,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE/work"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/work/RUN.md"
+mkrunmd "$STATE"
 # Deliberately NO plan.md anywhere; config names one that does not exist.
 
 cat > "$STATE/config.json" <<'EOF'
@@ -34,6 +34,7 @@ assert_no_grep "$JOURNAL" 'session\.start' "c202_no_session_started"
 # Default plan_path ($PROJECT/plan.md) missing must refuse the same way.
 STATE2="$PWD/state2"
 mkdir -p "$STATE2/work"
+mkrunmd "$STATE2"
 printf '{"max_sessions":3}\n' > "$STATE2/config.json"
 mkconsent "$STATE2"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE2" >"$PWD/out2.log" 2>"$PWD/err2.log"

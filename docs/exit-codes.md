@@ -2,8 +2,8 @@
 
 `relay-supervisor.sh` is the process a user or `/relay-run` waits on, and its
 exit code is the only thing an unattended overnight run leaves behind besides
-the journal. The codes are declared as a block of constants at
-`plugins/relay/scripts/relay-supervisor.sh:75-77`:
+the journal. The codes are declared as one block of constants, `EX_OK` through
+`EX_PREFLIGHT`, at `plugins/relay/scripts/relay-supervisor.sh:82-84`:
 
 ```
 EX_OK=0 EX_BLOCKED=20 EX_STALLED=21 EX_TIMEOUT=22 EX_CAPPED=23
@@ -17,6 +17,14 @@ different reasons; each cause is listed separately with its own line number,
 because collapsing them loses information a human needs at 3am. Two `exit 78`s
 (lines 38 and 44) are literal rather than `$EX_PREFLIGHT` because they run
 before the constants exist; they are listed under 78 all the same.
+
+<!-- citations-default: plugins/relay/scripts/relay-supervisor.sh -->
+
+Unqualified line references below — the **Line NNN** bullets, and prose of the
+form (lines N-M) — are lines of
+`plugins/relay/scripts/relay-supervisor.sh`. Anything in another file names it.
+The machine-readable form of that sentence is the `citations-default` comment
+above, which is what `test/lint/citations.sh` binds them to.
 
 `state.json`'s `status` field is what a human actually reads (`/relay-status`
 surfaces it); it is noted per cause where the code sets one. Not every exit
@@ -46,21 +54,21 @@ numbers come from bash's 128+N convention, not from relay's constants.
 ## 0 — `EX_OK`
 
 Two call sites, same meaning: the run is finished and `verify_complete()`
-(lines 736-842) actually proved it — sealed `work/COMPLETE.md`,
+(lines 811-924) actually proved it — sealed `work/COMPLETE.md`,
 clean tree, and either the approved acceptance command passed (its
 `exec_hash` still matching) or, when no acceptance command is configured,
 the commit count grew since `commits_at_start`. The commit count is a hard
 veto *only* in that second case: a passing acceptance command is the run's
 own definition of done, so a run that added no commits — a resume after the
 work was already finished — is accepted with the fact journaled as
-`complete.no-new-commits` (lines 827-840).
+`complete.no-new-commits` (lines 909-922).
 
-- **Line 874** — pre-spawn gate: `COMPLETE.md` was already sealed and valid
+- **Line 956** — pre-spawn gate: `COMPLETE.md` was already sealed and valid
   before this invocation even started a session (e.g. a previous run finished
   and someone re-ran the supervisor). `state_set status "complete"`.
-- **Line 1013** — post-exit: the session just run sealed `COMPLETE.md` and it
-  verified. `state_set status "complete" session_count "$N" cost_total
-  "$COST_TOTAL"`.
+- **Line 1095** — post-exit: the session just run sealed `COMPLETE.md`, it
+  verified, and the supervisor exits `EX_OK`. `state_set status "complete"
+  session_count "$N" cost_total "$COST_TOTAL"` records it first.
 
 Look at `$STATE/work/COMPLETE.md` for the session's own proof (commit shas,
 test output) and the journal's `complete.verified` line. Nothing to resume.
@@ -70,39 +78,39 @@ test output) and the journal's `complete.verified` line. Nothing to resume.
 Five distinct causes. All five leave a `$STATE/work/BLOCKED.md` behind: two
 are sealed by the session itself, and three are written by relay.
 
-- **Line 879** — pre-spawn: `work/BLOCKED.md` was already sealed on entry.
+- **Line 961** — pre-spawn: `work/BLOCKED.md` was already sealed on entry.
   `state_set status "blocked"`. Read the file.
-- **Line 1033** — post-exit: the session just run sealed `work/BLOCKED.md`.
+- **Line 1115** — post-exit: the session just run sealed `work/BLOCKED.md`.
   `state_set status "blocked" session_count "$N" cost_total "$COST_TOTAL"`.
   Read the file, written by the session itself.
-- **Line 1102** — the supervisor's own guardrail-drift detector
-  (`handoff_guardrail_drift`, two AND-ed patterns at lines 544-545: a
+- **Line 1184** — the supervisor's own guardrail-drift detector
+  (`handoff_guardrail_drift`, two AND-ed patterns at lines 619-620: a
   permission word and a danger word on the same handoff line) found the
   handoff asserting a relaxed guardrail (e.g. "user approved the
   force-push"). The supervisor writes `work/BLOCKED.md` itself (lines
   1037-1044), then `state_set status "blocked" reason "guardrail-drift"`
-  (line 1101). Look at the journal's `handoff.guardrail-drift` line and the session
+  (line 1183). Look at the journal's `handoff.guardrail-drift` line and the session
   log named in the generated `BLOCKED.md` — this may be prompt injection.
-- **Line 1131** — `relay_git_commit` returned 1: a probable credential was
+- **Line 1213** — `relay_git_commit` returned 1: a probable credential was
   found in the staged content and nothing was committed.
-  `state_set status "blocked" reason "secret-detected"` at line 1130.
+  `state_set status "blocked" reason "secret-detected"` at line 1212.
   A `BLOCKED.md` **is** written for this cause, by `relay-git.sh` rather than
-  by the supervisor: line 1125 passes `$WORK` as `relay_git_commit`'s third
+  by the supervisor: line 1207 passes `$WORK` as `relay_git_commit`'s third
   argument, and `relay-git.sh:315-330` writes a sealed `BLOCKED.md` there
   listing the matched locations with the values withheld. Also check the
   journal's `commit.secret-blocked` line and the supervisor's own
   stdout/stderr (not the session log; `relay_git_commit` prints the matched
   pattern and location, never the secret itself), then `git status`/`git diff`
-  in the project. The staged changes were reset (`relay-git.sh:312`) and
+  in the project. The staged changes were reset with `relay_git reset` (`relay-git.sh:311-312`) and
   nothing was committed; the working tree is untouched.
-- **Line 794** — inside `verify_complete()`: the acceptance command in
+- **Line 876** — the `EX_BLOCKED` exit inside `verify_complete()`: the acceptance command in
   `exec.json` no longer matches the `exec_hash` recorded when a human
   approved it, re-checked from the file as it exists immediately before the
-  command would run (lines 777-781). Relay writes `work/BLOCKED.md` (lines
-  728-736), journals `exec.hash-mismatch` (line 782), and sets
-  `state_set status "blocked" reason "exec-hash-mismatch"` (line 793).
-  Because `verify_complete()` runs both pre-spawn (line 871) and post-exit
-  (line 1009), this exit can fire in either position. Something edited a
+  command would run (lines 859-863). Relay writes `work/BLOCKED.md` (lines
+  728-736), journals `exec.hash-mismatch` (line 864), and sets
+  `state_set status "blocked" reason "exec-hash-mismatch"` (line 875).
+  Because `verify_complete()` runs both pre-spawn (line 953) and post-exit
+  (line 1091), this exit can fire in either position. Something edited a
   command relay was about to execute — treat it as tampering until shown
   otherwise, then re-approve with `/relay-approve`.
 
@@ -116,23 +124,23 @@ only after inspecting `exec.json` and re-approving.
 
 ## 21 — `EX_STALLED`
 
-- **Line 1198** — one cause: `STALL` (incremented at line 1179 whenever a
+- **Line 1280** — one cause: `STALL` (incremented at line 1261 whenever a
   session changes neither HEAD nor the handoff hash) reached `stall_limit`
   (default 3). `state_set status "stalled" session_count "$N"`.
 
 Look at the journal's `stall.count` lines (one per increment) and the last
 few session logs in `$STATE/sessions/` to see why nothing committed. Fable
-escalation is attempted automatically before this trips (lines 1185-1192), so
+escalation is attempted automatically before this trips (lines 1267-1274), so
 by the time you see `EX_STALLED` the smarter tier already failed to help.
 `/relay-resume` works mechanically but will likely stall again unless the
 plan or a note (`/relay-note`) changes what the next session tries.
 
 ## 22 — `EX_TIMEOUT`
 
-- **Line 1163** — one cause: `TIMEOUTS` (incremented at line 1156 whenever a
+- **Line 1245** — one cause: `TIMEOUTS` (incremented at line 1238 whenever a
   session's `$RC` was 124 or 137 — killed by `relay_timeout`) reached
   `max_timeouts` (default 2). `state_set status "timeout" session_count "$N"`
-  at line 1162, the line immediately above the exit.
+  at line 1244, the line immediately above the exit.
 
 Look at the journal's `session.timeout` and `timeout.tripped` lines, and the
 `.err` file next to the killed session's log for what it was doing at the
@@ -141,7 +149,7 @@ too low for the workload, raise it first or the next session times out too.
 
 ## 23 — `EX_CAPPED`
 
-- **Line 888** — one cause, pre-spawn only: `session_count` (`$N`) reached
+- **Line 970** — one cause, pre-spawn only: `session_count` (`$N`) reached
   `max_sessions` (default 12) before starting session `N+1`.
   `state_set status "capped"`.
 
@@ -153,9 +161,9 @@ the counter persists in `state.json`).
 
 ## 24 — `EX_STOPPED`
 
-- **Line 883** — pre-spawn: `$STATE/STOP` already existed on entry.
+- **Line 965** — pre-spawn: `$STATE/STOP` already existed on entry.
   `state_set status "stopped"`.
-- **Line 1038** — post-exit: `$STATE/STOP` appeared while the just-finished
+- **Line 1120** — post-exit: `$STATE/STOP` appeared while the just-finished
   session was running. `state_set status "stopped" session_count "$N"`.
 
 Both causes are `/relay-stop` working as designed. `/relay-resume` is the
@@ -163,7 +171,7 @@ correct and intended next action (it clears `STOP` and continues).
 
 ## 25 — `EX_LOCKED`
 
-- **Line 273** — one cause: `relay_lock "$STATE/locks/run.d" 0` failed
+- **Line 344** — one cause: `relay_lock "$STATE/locks/run.d" 0` failed
   (`plugins/relay/scripts/lib/relay-lib.sh:212-251`), meaning a live
   supervisor already holds this project's lock directory. **No `state_set`
   call happens here** — deliberately: this process never held the lock, so
@@ -183,11 +191,11 @@ It never breaks a lock merely because `ps` failed.
 
 ## 26 — `EX_FASTFAIL`
 
-- **Line 1203** — one cause: `FASTFAIL` reached `fastfail_limit` (default 3).
-  It is incremented at line 1182 only for a session that was BOTH unproductive
+- **Line 1285** — one cause: `FASTFAIL` reached `fastfail_limit` (default 3).
+  It is incremented at line 1264 only for a session that was BOTH unproductive
   and shorter than `min_session_secs` (default 45); a session that committed
   or wrote a valid handoff clears the streak however brief it was
-  (`:1176-1177`). `state_set status "blocked" reason "fastfail"` — **the
+  (`:1258-1259`). `state_set status "blocked" reason "fastfail"` — **the
   status string says `"blocked"`, not `"fastfail"`**; only the `reason` field
   and the exit code itself distinguish it from an `EX_BLOCKED` exit.
 
@@ -200,19 +208,19 @@ session fails the same way in the same handful of seconds.
 
 ## 27 — `EX_REJECTED`
 
-- **Line 1024** — one cause: `COMPLETE.md` was sealed and rejected by
+- **Line 1106** — one cause: `COMPLETE.md` was sealed and rejected by
   `verify_complete()` three times in a row (`complete_rejections >= 3`,
-  tracked at lines 1018-1021). `state_set status "blocked" reason
-  "repeated-false-complete"` at line 1023 — again, `status` says `"blocked"`,
+  tracked at lines 1100-1103). `state_set status "blocked" reason
+  "repeated-false-complete"` at line 1105 — again, `status` says `"blocked"`,
   the exit code and `reason` are what say `REJECTED`.
 
 Look at the journal for the three preceding `complete.rejected` lines —
-`verify_complete()` (lines 736-842) journals *why* each time: `"working tree
+`verify_complete()` (lines 811-924) journals *why* each time: `"working tree
 not clean"`, `"acceptance command failed"` (with `$STATE/run/acceptance.log`
 for that one), or — only when no acceptance command is configured — `"no
 commits were made (start=… now=…)"`.
 `/relay-resume` is conditional: each rejection already escalated the next
-session to `fable` (line 1026), so a human should confirm the acceptance
+session to `fable` (line 1108), so a human should confirm the acceptance
 criteria are actually satisfiable before resuming into a fourth attempt.
 
 ## 28 — `EX_IO`
@@ -220,46 +228,46 @@ criteria are actually satisfiable before resuming into a fourth attempt.
 Two call sites genuinely exit the supervisor process with this code; a third
 `exit 28` in the file does **not** — that distinction matters here.
 
-- **Line 63** — `mkdir -p` of `$STATE/run`, `sessions`, `handoffs`, `locks`,
+- **Line 70** — `mkdir -p` of `$STATE/run`, `sessions`, `handoffs`, `locks`,
   `priv`, `work/run`, `work/probe` failed (permissions, missing parent, full
-  disk). This is before `RELAY_JOURNAL` is exported (line 70) and before
-  `state.json` exists (line 252), so **nothing is journaled and no status is
+  disk). This is before `RELAY_JOURNAL` is exported (line 77) and before
+  `state.json` exists (line 107), so **nothing is journaled and no status is
   set** — the only evidence is whatever the shell printed to stderr. Check
   disk space and permissions on the state directory directly.
-- **Line 934** — `relay_uuid` (`lib/relay-lib.sh:374-426`) failed to produce
+- **Line 1016** — `relay_uuid` (`lib/relay-lib.sh:374-426`) failed to produce
   a session id (no `uuidgen`, no `/proc/sys/kernel/random/uuid`, no readable
   `/dev/urandom` — effectively never on a supported OS).
   `relay_journal "uuid.failed" ""` runs, but **no `state_set` call** — status
-  stays at the `"running"` set at line 428.
-- **Line 953** — `cd "$PROJECT" || exit 28` — this `exit` is inside the
-  subshell that launches `claude` (lines 952-969), so it only sets that
+  stays at the `"running"` set at line 503.
+- **Line 1035** — `cd "$PROJECT" || exit 28` — this `exit` is inside the
+  subshell that launches `claude` (lines 1034-1051), so it only sets that
   iteration's session `$RC` to 28; it does **not** end the supervisor
   process. A `$RC` of 28 here is not specially handled afterward (only 124
-  and 137 are, at line 1152), so it is scored as an ordinary unproductive
+  and 137 are, at line 1234), so it is scored as an ordinary unproductive
   session and surfaces later as `EX_STALLED` or `EX_FASTFAIL`, never as a
   supervisor-level `EX_IO`. Grepping for `exit 28` and expecting an `EX_IO`
   exit here would be wrong — this is working as coded, just worth not
   confusing with the other two.
 
 `/relay-resume` is conditional and cause-dependent: fix the state-dir
-permissions/disk issue for line 63, or the (very unlikely) missing entropy
-source for line 879, before resuming — otherwise the identical failure
+permissions/disk issue behind the `mkdir -p` at line 69-70, or the (very unlikely) missing entropy
+source — `relay_uuid` — for line 1016, before resuming — otherwise the identical failure
 repeats on the very next attempt.
 
 ## 29 — `EX_BUDGET`
 
 Two distinct causes with two distinct `status` values, sharing one exit code.
 
-- **Line 893** — pre-spawn: `COST_TOTAL >= BUDGET_TOTAL` (default
-  `$20.00` total, line 100). `state_set status "budget"`. This is spend
+- **Line 975** — pre-spawn: `COST_TOTAL >= BUDGET_TOTAL` (default
+  `$20.00` total, line 149). `state_set status "budget"`. This is spend
   actually incurred, tracked cumulatively in `state.json`'s `cost_total`.
-- **Line 1048** — post-exit, inside `usage_limited()` handling
-  (lines 1043-1079): the CLI's own transport envelope indicated a provider
+- **Line 1130** — post-exit, inside `usage_limited()` handling
+  (lines 1125-1161): the CLI's own transport envelope indicated a provider
   usage/rate limit (`api_error_status` 429, or an errored result whose
-  fields match `LIMIT_RE` — `usage_limited()`, lines 620-640), and either
+  fields match `LIMIT_RE` — `usage_limited()`, lines 695-715), and either
   `on_limit` is not `"wait"` or `LIMIT_RETRIES` exceeded `max_usage_retries`
   (default 20). `state_set status "usage-limit"`. The retry/backoff loop
-  (lines 1044-1075) already absorbs ordinary rate limiting — and it preserves a
+  (lines 1126-1157) already absorbs ordinary rate limiting — and it preserves a
   queued operator note across the retry (`inbox.preserved-on-retry`, lines
   1004-1009) — so reaching this exit means the backoff itself gave up, not that
   the first limit was hit.
@@ -281,38 +289,41 @@ between sessions, never mid-session.
 |-----:|-------------|----------------|
 | 38 | `PROJECT` directory does not exist or is not `cd`-able | (none — see below) |
 | 44 | `STATE` could not be created or canonicalised to a real path | (none — see below) |
-| 134 | a numeric config value is not a number (`max_sessions: "twelve"` would otherwise silently disable the cap, or crash `$(( ))` mid-loop) | `config.non-numeric` |
-| 148 | `exec.json`'s `acceptance_cmd` is not a valid non-empty argv array | `exec.acceptance-cmd-invalid` |
-| 162 | `acceptance_cmd` is present but carries no valid `exec_hash` — the command was never approved via `/relay-approve` | `exec.hash-missing` |
-| 179 | the plan file named by `plan_path` does not exist | `preflight.plan-missing` |
-| 199 | `model_tier` is not one of `opus`/`sonnet`/`fable` | `config.model-tier-invalid` |
-| 230 | a configured `window_<tier>` is below the 100000-token floor (`RELAY_MIN_WINDOW`) | `config.window-too-small` |
-| 283 | `relay-doctor.sh` (invoked as a subprocess, line 280) failed a hard check — including absent or stale consent (`consent.notice_hash`) | `preflight.failed` |
-| 303 | window leaves too little room above the measured `ctx_baseline` | `config.window-too-small-for-baseline` |
-| 329 | `allow_domains` is not a valid comma-separated hostname list | `config.allow-domains-invalid` |
-| 348 | `sandbox_mode` is neither `enforced` nor `disabled` | `config.sandbox-mode-invalid` |
-| 363 | `relay_settings_build` failed to construct the settings payload | `settings.build-failed` |
-| 382 | the settings fingerprint could not be computed as a 40-hex blob id — an empty fingerprint would false-hit the probe cache and skip the sandbox proof | `probe.fingerprint-invalid` |
-| 421 | the acceptance probe (`relay_settings_probe`) failed — in `enforced` mode the sandbox could not be proven to confine, in `disabled` mode the payload could not be proven accepted | `probe.failed` |
-| 593 | the injection / guardrail-drift regex self-test failed under the live `grep` — a filter that cannot be shown to fire is treated as absent | `selftest.guards-failed` |
-| 943 | the per-session argv assertion (`relay_settings_assert_argv`) failed before spawning | `argv.assert-failed` |
+| 183 | a numeric config value is not a number (`max_sessions: "twelve"` would otherwise silently disable the cap, or crash `$(( ))` mid-loop) | `config.non-numeric` |
+| 203 | `stall_limit` or `fastfail_limit` is below 1 — at 0 the circuit breaker trips after the first session, productive or not | `config.limit-below-one` |
+| 229 | `exec.json`'s `acceptance_cmd` is not a valid non-empty argv array | `exec.acceptance-cmd-invalid` |
+| 243 | `acceptance_cmd` is present but carries no valid `exec_hash` — the command was never approved via `/relay-approve` | `exec.hash-missing` |
+| 260 | the plan file named by `plan_path` does not exist | `preflight.plan-missing` |
+| 276 | `$STATE/work/RUN.md` does not exist — no mission, no acceptance criteria, no guardrails for any session to read | `preflight.run-md-missing` |
+| 296 | `model_tier` is not one of `opus`/`sonnet`/`fable` | `config.model-tier-invalid` |
+| 327 | a configured `window_<tier>` is below the 100000-token floor (`RELAY_MIN_WINDOW`) | `config.window-too-small` |
+| 354 | `relay-doctor.sh` (invoked as a `bash` subprocess, line 351) failed a hard check — including absent or stale consent (`consent.notice_hash`) | `preflight.failed` |
+| 374 | window leaves too little room above the measured `ctx_baseline` | `config.window-too-small-for-baseline` |
+| 400 | `allow_domains` is not a valid comma-separated hostname list | `config.allow-domains-invalid` |
+| 419 | `sandbox_mode` is neither `enforced` nor `disabled` | `config.sandbox-mode-invalid` |
+| 438 | `relay_settings_build` failed to construct the settings payload | `settings.build-failed` |
+| 457 | the settings fingerprint could not be computed as a 40-hex blob id — an empty fingerprint would false-hit the probe cache and skip the sandbox proof | `probe.fingerprint-invalid` |
+| 496 | the acceptance probe (`relay_settings_probe`) failed — in `enforced` mode the sandbox could not be proven to confine, in `disabled` mode the payload could not be proven accepted | `probe.failed` |
+| 668 | the injection / guardrail-drift regex self-test failed under the live `grep` — a filter that cannot be shown to fire is treated as absent | `selftest.guards-failed` |
+| 1025 | the per-session argv assertion (`relay_settings_assert_argv`) failed before spawning | `argv.assert-failed` |
 
-Thirteen of the seventeen call no `state_set` at all, so for those there is no
-status to read. Lines 38 and 44 run before `RELAY_JOURNAL` is exported (line
-70) *and* before `state.json` exists (line 252) — no journal line, no status;
-stderr is the sole evidence. Lines 134 through 230 journal their event but
-still predate `state.json`, so they could not record a status even if they
-wanted to. Lines 303, 329, 348, 363 and 888 run *after* state is initialized
-and simply do not set one, leaving `status` at whatever it was — do not read
+Fifteen of the nineteen call `state_set status` not at all, so for those there
+is no status to read. Lines 38 and 44 run before `RELAY_JOURNAL` is exported
+(line 77) *and* before `state.json` is created (line 107) — no journal line, no
+status; stderr is the sole evidence. Lines 183 through 327 do journal their
+event, and since 1.0.2 they also run after `state.json` exists, so `status` is
+whatever the previous run left — `sandbox_mode` and `reason` are cleared for the
+new invocation (line 131) but `status` is not. Lines 374, 400, 419, 438 and 1025
+run after state is initialized and simply do not set one either. Do not read
 "no status" as "never got that far", and treat a leftover `"running"` after one
 of these exits as stale, not live.
 
-The four that *do* record a status: line 283 sets `status "preflight-failed"`
-(line 282); line 382 sets `status "preflight-failed" reason
-"fingerprint-uncomputable"` (line 381); line 421 sets `status
+The four that *do* record a status: line 354 sets `status "preflight-failed"`
+(line 353); line 457 sets `status "preflight-failed" reason
+"fingerprint-uncomputable"` (line 456); line 496 sets `status
 "preflight-failed" reason "sandbox-not-enforced"` (enforced mode) or
-`"settings-not-accepted"` (disabled mode) at line 420; line 593 sets
-`status "preflight-failed" reason "regex-selftest-failed"` (line 591).
+`"settings-not-accepted"` (disabled mode) at line 495; line 668 sets
+`status "preflight-failed" reason "regex-selftest-failed"` (line 666).
 
 `/relay-resume` is never the right first move for any of these: nothing ran,
 so resuming without changing the reported cause reproduces the exact same
@@ -324,9 +335,9 @@ exit immediately. Fix the specific thing named in the stderr message first.
   if bash is older than 3. Every relay script sources the library first, so
   on a hopeless shell this fires before any of the causes above. No journal,
   no status; the message names the bash version it saw.
-- **`relay-doctor.sh:357`** — doctor exits a literal 78 when a hard check
-  failed (and a literal 0 at line 364 otherwise; it defines no `EX_*`
-  constants of its own). The supervisor does not propagate doctor's code —
+- **`relay-doctor.sh:355-357`** — doctor's `HARD_FAIL` branch exits a literal
+  78 when a hard check failed, and a literal 0 when `HARD_FAIL` is zero
+  (`relay-doctor.sh:355-364`); it defines no `EX_*` constants of its own. The supervisor does not propagate doctor's code —
   it treats *any* nonzero from doctor as its own `EX_PREFLIGHT` (lines
   280-284) — but since doctor only ever produces 0 or 78, the numbers agree
   in practice. Run doctor directly for the full FAIL/fix report.
@@ -334,7 +345,7 @@ exit immediately. Fix the specific thing named in the stderr message first.
 ## Signal exits: 129 / 130 / 143
 
 The supervisor installs INT/TERM/HUP traps (`relay_install_traps`, installed
-at `relay-supervisor.sh:275`, defined `lib/relay-lib.sh:708-714`, handlers
+at `relay-supervisor.sh:346`, defined `lib/relay-lib.sh:708-714`, handlers
 `lib/relay-lib.sh:678-694`, cleanup `lib/relay-lib.sh:641-676`). On a signal
 the handler tears down the running session's process group (TERM, then a
 grace period, then KILL), reaps it, releases the lock, journals

@@ -8,7 +8,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE/work"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/work/RUN.md"
+mkrunmd "$STATE"
 printf '# Plan\n\n1. step one\n' > "$PROJ/plan.md"
 
 # 1. NO recorded consent: the supervisor must refuse at preflight via doctor.
@@ -32,6 +32,7 @@ assert_no_grep "$STATE/journal.log" 'session\.start' "c204_no_session_started"
 #    hard-fail with the re-consent remedy.
 STATE2="$PWD/state2"
 mkdir -p "$STATE2/work"
+mkrunmd "$STATE2"
 jq -n '{max_sessions: 3,
         consent: {accepted_at: "1970-01-01T00:00:00Z",
                   notice_hash: "0000000000000000000000000000000000000000"}}' \
@@ -47,6 +48,7 @@ assert_grep "$PWD/doc.err" 're-run /relay-init' "c204_stale_consent_remedy"
 # 3. VALID consent (the canonical extraction) must pass the consent check.
 STATE3="$PWD/state3"
 mkdir -p "$STATE3/work"
+mkrunmd "$STATE3"
 printf '{"max_sessions":2}\n' > "$STATE3/config.json"
 mkconsent "$STATE3"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE3" >"$PWD/out3.log" 2>"$PWD/err3.log"

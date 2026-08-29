@@ -42,6 +42,12 @@ jobs:
       - name: plugin layer consistency
         run: bash test/lint/plugin-layer.sh
 
+      - name: source citations in the docs are live
+        # Every `file.sh:NNN` in every .md must land on a line that still
+        # mentions what its sentence claims. Also run inside publish-check.sh;
+        # given its own step so a docs-only failure reads as a docs failure.
+        run: bash test/lint/citations.sh
+
       - name: publish gates (pure-shell subset)
         # publish-check.sh guards its `claude plugin validate` gate behind
         # `command -v claude`, so everything else (doc gates, exit-code

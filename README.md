@@ -52,10 +52,18 @@ while the egress check can come back *inconclusive* on a machine without
 proceeds on the canary's proof alone, because "we could not tell" is not the
 same claim as "blocked".
 
+Two environment variables switch that proof off — `RELAY_SKIP_PROBE=1` and
+`RELAY_SKIP_SELFTEST=1` — and both exist for relay's own test suite. They are
+not read from `config.json` and a repository cannot set them, so they are not a
+way in; they are simply the honest footnote on the word "refuses". A run started
+with either has protections that were asserted rather than demonstrated.
+
 **You can switch the sandbox off, deliberately.** Some work genuinely needs the
 network: deploying, operating a server, SSHing to a host. For that there is one
-per-project opt-in, `sandbox_mode: "disabled"`, chosen at `/relay-init` and
-never inferred. It means what it says — **no sandbox at all**: sessions can
+per-project opt-in, the `sandbox_mode` key in that project's `config.json`, set
+to `"disabled"`. Relay never infers it and never falls back to it; `/relay-init`
+is where you are asked, and it is also the only path that records consent to the
+notice covering it. It means what it says — **no sandbox at all**: sessions can
 reach any host, SSH to your machines, and read anything you can read, including
 `~/.ssh`. Most of the deny-list is lifted with it, and what remains (relay still
 never pushes) stops accidents rather than intent, since anything reachable from
@@ -106,8 +114,8 @@ delivered per-invocation, so nothing relay installs runs in your other sessions.
 /plugin install relay@relay
 ```
 
-The install command is unchanged in 1.0.0. **Upgrading to it is not a silent
-step**, though, and one thing is required of you:
+The install command has not changed since 0.1.0. **Upgrading is not a silent
+step**, though, and one thing is required of you, once per existing project:
 
 ```
 /relay-init                       # per project, once, after upgrading
@@ -119,8 +127,18 @@ initialised under 0.1.0 consented to wording that no longer exists, and
 `/relay-doctor` fails closed on that with *"the consent notice has changed since
 consent was recorded"* until you re-run `/relay-init` and accept the current
 terms. That is the mechanism doing its job: the terms changed, so your agreement
-to the old ones is not carried over. Nothing else about an existing project
-needs touching, and projects stay in `enforced` mode unless you choose otherwise.
+to the old ones is not carried over. Projects stay in `enforced` mode unless you
+choose otherwise.
+
+**On an existing project, `init` should re-consent and nothing else.** A full
+init rewrites `$STATE/work/RUN.md` and `$STATE/config.json`, and RUN.md is where
+your **Decisions already made (DO NOT RE-ASK)** and the **Course corrections**
+written by review sessions live. Losing those is silent: the next session just
+starts re-asking things you settled. So `init` checks for an
+already-initialised project and, when the only thing that changed is the consent
+notice, takes the acceptance and stops — leaving RUN.md and the rest of your
+configuration untouched. If you are deliberately re-initialising a project from
+scratch, copy `$STATE/work/RUN.md` somewhere first.
 
 Relay never auto-updates. Upgrading is deliberate, after reading the diff.
 
@@ -183,12 +201,18 @@ sandbox_mode: disabled   # full trust — NO sandbox: any host, any readable fil
 Pick `disabled` and sessions can `ssh` to your machines, curl anything, and read
 whatever your user account can read, including your keys. Relay still never
 pushes to a git remote, and still never passes
-`--dangerously-skip-permissions` — but nothing else confines the run.
+`--dangerously-skip-permissions` — but nothing else confines the run. What
+"nothing else" costs, itemised — the macOS keychain, `git reset --hard` on
+uncommitted work, `crontab`/`launchctl` persistence — is in
+[`docs/security.md`](docs/security.md) under "What full trust actually costs".
 
-It is one config key, so you can also set it directly and resume:
+The value is a plain key in that project's `config.json`, so you can also set it
+by hand and resume. The interview is the supported route because it is what
+records consent; this is the same key by another door:
 
 ```
-jq '.sandbox_mode = "disabled"' "$STATE/config.json" > tmp && mv tmp "$STATE/config.json"
+jq '.sandbox_mode = "disabled"' "$STATE/config.json" > "$STATE/config.json.tmp" \
+  && mv "$STATE/config.json.tmp" "$STATE/config.json"
 /relay-stop        # config is read once at startup
 /relay-resume
 ```
@@ -269,7 +293,12 @@ the repository.
   comma-separated hostname list. The default allowlist is `api.anthropic.com`
   and nothing else, so `npm ci` fails inside the sandbox until the registry is
   listed here. Validated as hostnames at preflight; a malformed value refuses
-  to start rather than silently never matching.
+  to start rather than silently never matching. **It does nothing under
+  `sandbox_mode: "disabled"`** — there is no allowlist there to extend, and the
+  payload carries no `network` key at all. It is still validated, so a typo
+  still refuses to start rather than being quietly ignored, and it is still
+  journaled as `sandbox.extra-domains`. Read that line as "configured", not as
+  "applied": in full trust every host is reachable whether or not it is listed.
 - **`sandbox_mode`** (`config.json`, default `enforced`) — `enforced` runs every
   session under the OS sandbox. `disabled` is the full-trust opt-in described
   above: no sandbox, so SSH, arbitrary hosts and any readable file are in reach,

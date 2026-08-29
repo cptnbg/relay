@@ -79,11 +79,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Exit-code line citations. docs/exit-codes.md cites supervisor call sites as
-# "**Line NNN**" bullets (and, in the EX_PREFLIGHT section, as table rows).
-# The number-presence gate above cannot see citation rot, so each cited line
-# is checked against the supervisor: it must exist and actually mention the
-# section's EX_ constant or a literal `exit <code>`.
+# Source citations across EVERY markdown file. This used to be an exit-codes.md
+# gate only, which is precisely why exit-codes.md was the one file in the tree
+# without citation rot: a gate covering one document licenses the other six.
+# ---------------------------------------------------------------------------
+if bash "$ROOT/test/lint/citations.sh" > "${TMPDIR:-/tmp}/relay-citations.$$" 2>&1; then
+  ok "$(tail -1 "${TMPDIR:-/tmp}/relay-citations.$$" | sed 's/^ *//')"
+else
+  bad "stale source citations (bash test/lint/citations.sh for the list)"
+  sed 's/^/      /' "${TMPDIR:-/tmp}/relay-citations.$$"
+fi
+rm -f "${TMPDIR:-/tmp}/relay-citations.$$"
+
+# ---------------------------------------------------------------------------
+# Exit-code line citations, checked a second and stricter way. The general gate
+# above asks whether a cited line still discusses what its sentence is about;
+# this asks the domain question it cannot know to ask — that a line cited under
+# "## 27 — EX_REJECTED" actually mentions `$EX_REJECTED` or `exit 27`. Kept
+# because a citation can survive the first check and still be filed under the
+# wrong exit code.
 # ---------------------------------------------------------------------------
 _sup=plugins/relay/scripts/relay-supervisor.sh
 _doc=docs/exit-codes.md
