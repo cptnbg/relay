@@ -20,8 +20,16 @@ relay's inline hook wrote `run/hook.alive`, the canary was **readable**, and
 `sandbox: {"enabled": false}` object rather than rejecting the payload, and full
 trust really is full. Case 2 (same payload, `hooks` block removed): no marker —
 the control proving the marker is evidence of delivery rather than a coincidence.
-Together they are what lets the disabled-mode probe distinguish an accepted
-payload from a silently discarded one.
+
+**Case 3, added 2026-08-29 and the load-bearing one:** a payload that keeps the
+`hooks` block but is otherwise malformed (`enabled: "yes"`, `allow` a string,
+`deny` an object) also produced **no marker**, with `permission_denials=1`
+confirming the CLI processed it differently. Case 2 only established *no hooks
+key ⇒ no marker*, which is the converse of a different statement; production
+infers *no marker ⇒ the payload was REJECTED*, and only case 3 exercises that
+direction. Without it the probe did not prove what its own header claimed.
+Together the three cases are what lets the disabled-mode probe distinguish an
+accepted payload from a silently discarded one.
 
 One empirical caveat found while establishing it, and the reason the probe's
 scratch is named the way it is: an earlier draft used a canary file called
