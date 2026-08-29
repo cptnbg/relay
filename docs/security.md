@@ -126,7 +126,7 @@ The trap: **a hook that writes outside `sandbox.filesystem.allowWrite` fails sil
 the symptom is indistinguishable from "the hook never fired."** This cost real debugging
 time during Phase 0. The sandbox's `allowWrite` is exactly the project, relay's
 session-writable work directory `$STATE/work/`, and `$TMPDIR`
-(`plugins/relay/scripts/relay-settings.sh:236`); the context guard writes only under
+(`plugins/relay/scripts/relay-settings.sh:327`); the context guard writes only under
 `$STATE/work/` — the supervisor-only remainder of the state directory (state.json,
 journal.log, exec.json, locks/) is deliberately *not* writable from inside a session.
 Any future hook must respect the same rule, and the test suite asserts it.
@@ -191,26 +191,26 @@ has to be probed against the real CLI.
 
 ## Standing design rules that follow
 
-Rules 1-5 describe the default `enforced` mode. Where `sandbox_mode: "disabled"`
+Rules 1-3 describe the default `enforced` mode. Where `sandbox_mode: "disabled"`
 (full trust) changes them, that is stated inline and in "Trust mode inverts the
-probe" below; rules 6 and 7 hold in both modes.
+probe" below; rules 4-7 hold in both modes, unconditionally.
 
 1. **Fail closed on settings.** `-p` silently ignores settings files that fail validation,
    so relay must positively confirm enforcement before every run rather than assume it.
    The production acceptance probe (`relay_settings_probe`,
-   `plugins/relay/scripts/relay-settings.sh:474-573`) is `probe0-sandbox.sh`'s shape:
+   `plugins/relay/scripts/relay-settings.sh:494-594`) is `probe0-sandbox.sh`'s shape:
    in a relay-owned scratch directory (`$STATE/work/probe/`), assert that a `denyRead`
    canary is actually unreadable and that a host outside `network.allowedDomains` is
    actually unreachable. Both assertions leave evidence in files the supervisor reads,
    never in the model's prose: the canary read is redirected into a proof file (a
    sandbox that is off puts the canary's value there whatever the model then says,
-   `relay-settings.sh:515-521`), and the egress attempt records `code=`/`rc=` marker
+   `relay-settings.sh:533-541`), and the egress attempt records `code=`/`rc=` marker
    lines that the verdict parser reads by key — never "the first three digits in the
    file", which once misread curl's own "port 443" error text as an HTTP status and
-   refused a working sandbox (`relay-settings.sh:396-402`). The run is refused if the
+   refused a working sandbox (`relay-settings.sh:415-421`). The run is refused if the
    canary's value appears in the proof file, the session JSON, or stderr; if the probe
    session did not complete cleanly (`.is_error == false`); or if the egress verdict is
-   `reachable` (`relay-settings.sh:548-571`).
+   `reachable` (`relay-settings.sh:566-590`).
 
    One deliberate asymmetry, added when relay's own audit found the runtime probe testing
    only the canary while this rule claimed both: an egress attempt relay cannot interpret
@@ -233,10 +233,14 @@ probe" below; rules 6 and 7 hold in both modes.
    verified, and no shape that could be mistaken for an enforcing payload.
 4. **Never `--safe-mode`.** It disables all customizations including relay's own hooks,
    while permissions "work normally". It is a troubleshooting flag, not a sandbox.
-5. **Never `--bare` or `--no-session-persistence` in default mode.** `--bare` skips hooks
+5. **Never `--bare` or `--no-session-persistence`, in any mode.** `--bare` skips hooks
    (killing the context guard); `--no-session-persistence` destroys the transcript the
-   guard reads. `--bare` is used *only* in `--hardened` mode, deliberately, where the
-   context guard degrades to supervisor-side estimation.
+   guard reads. Both are in `relay_settings_assert_argv`'s forbidden list and are
+   refused unconditionally — there is no mode, flag or config value that permits
+   either. Earlier revisions of this rule said `--bare` was used "only in `--hardened`
+   mode". **There is no `--hardened` mode**, there never was one, and now that
+   `sandbox_mode` gives relay a real mode axis that sentence read as a live exemption
+   for full trust. It is deleted rather than corrected.
 6. **Pin the CLI version.** Record `claude --version` at `/relay-doctor` time; a version
    change forces re-running doctor, because the settings schema may have moved.
 7. **The payload must say what is allowed, not only what is forbidden.** Under
@@ -258,7 +262,7 @@ payload means no hooks and no deny-list at all while the journal claims otherwis
 
 The discriminator is relay's own inline `PostToolUse` hook, which is delivered inside the
 same `--settings` payload. `relay_settings_probe_disabled`
-(`plugins/relay/scripts/relay-settings.sh:599-701`) supplies the environment the hook
+(`plugins/relay/scripts/relay-settings.sh:619-738`) supplies the environment the hook
 requires — `RELAY_SESSION_ID` (also passed as `--session-id`, so the id appears in the
 hook's stdin payload) and a `RELAY_DIR` holding a `.relay` marker — then asserts three
 things, refusing on each: the session completed cleanly; `run/hook.alive` exists, proving
@@ -290,6 +294,42 @@ The guardrail-drift filter is deliberately **not** relaxed in this mode — it i
 few rails left once the sandbox is gone. RUN.md instead gives sessions the phrase
 "full-trust mode", which is accurate and does not match the filter.
 
+## What full trust actually costs, itemised
+
+The mode's own description — "sessions can reach any host, SSH to your machines, and
+read anything you can read" — is true and still understates it, because two of the
+things it stops protecting are not files and not hosts. These are **accepted** risks:
+they were weighed against the operational capability full trust exists to provide, and
+the deny list is deliberately left open rather than patched with guards a shell walks
+around anyway. They are written down so the choice is informed, not so it is reversed.
+
+- **The macOS keychain.** `Bash(security:*)` is denied in `enforced` mode and lifted in
+  `disabled`. `security dump-keychain` and `security find-generic-password -w` read
+  secrets out of the login keychain, which is not "a readable file" and is therefore
+  not covered by the sentence above. Whatever the keychain holds — App Store
+  credentials, Wi-Fi passwords, whatever an app put there — is in reach of a full-trust
+  session, subject to whatever the OS itself prompts for.
+- **Uncommitted work.** `Bash(git reset --hard:*)`, `Bash(git clean:*)` and
+  `Bash(git filter-branch:*)` are denied in `enforced` and lifted in `disabled`. Relay
+  still never pushes, so nothing reaches a remote — but the working tree and the local
+  history are destroyable, and a `git clean -fdx` takes untracked files no commit ever
+  saw. Relay's commit-per-session habit narrows the window; it does not close it.
+- **Persistence.** `Bash(crontab:*)`, `Bash(launchctl:*)`, `Bash(at:*)` and
+  `Bash(systemctl:*)` are denied in `enforced` and lifted in `disabled`. A full-trust
+  session can install something that outlives the run and every later relay session.
+- **Shell startup files the write guards miss.** The retained Write/Edit deny rules
+  cover `~/.zshrc`, `~/.bashrc`, `~/.profile` and `~/.zprofile`. They do **not** cover
+  `~/.zshenv`, which zsh sources for every invocation including non-interactive ones,
+  nor `~/.bash_profile`, `~/.bash_login` or `~/.config/fish/`. And the whole list binds
+  the Write and Edit *tools* only: `printf >> ~/.zshrc` through Bash is not a tool call
+  and no rule sees it. The guards stop an agent that reaches for the obvious tool. They
+  are not a boundary and are not offered as one.
+
+The general form of all four: in `disabled` mode `permissions.deny` is a reminder, not
+a control. Anything reachable from a shell is reachable. Choose the mode for a
+repository you would trust with your SSH keys, and re-read
+`relay_settings_deny_for_mode` if you want the exact list rather than these examples.
+
 ## What relay does not protect against
 
 - The agent runs the project's build and test commands. Those execute arbitrary repository
@@ -308,7 +348,7 @@ few rails left once the sandbox is gone. RUN.md instead gives sessions the phras
   check that still bites is the acceptance command's: before running it, relay re-reads
   `exec.json` and requires both that its hash matches the recorded `exec_hash` *and* that
   the argv still equals `ACCEPT_CMD_JSON`, the value captured in memory at preflight
-  (`relay-supervisor.sh:722-726`). Rewriting the command and its hash together on disk
+  (`relay-supervisor.sh:859-863`). Rewriting the command and its hash together on disk
   therefore still fails, because the in-memory anchor predates any session.
 
 ## Local hygiene note

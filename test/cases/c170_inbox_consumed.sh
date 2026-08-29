@@ -18,7 +18,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/RUN.md"
+mkrunmd "$STATE"
 printf '# Plan\n\n1. step one\n2. step two\n' > "$PROJ/plan.md"
 
 cat > "$STATE/config.json" <<'EOF'

@@ -7,8 +7,8 @@ patterns.
 
 ## Hard dependencies
 
-Stated in `plugins/relay/scripts/lib/relay-lib.sh:4-9`, the library header
-every other script sources:
+The `Allowed externals:` list in `plugins/relay/scripts/lib/relay-lib.sh:4-9`
+is the statement of record, in the library header every other script sources:
 
 - **bash 3.2** — the version gate at `relay-lib.sh:22-25` refuses to run
   under `BASH_VERSINFO[0] < 3`; the comment above it names the actual floor,
@@ -16,18 +16,19 @@ every other script sources:
   `relay-doctor.sh:88-92` checks the same thing at preflight and calls it out
   by version string in its failure message.
 - **git** — checked by `relay-doctor.sh:93` (`check_tool git 2.20
-  'git --version'`), so 2.20 is the minimum doctor enforces. `relay-lib.sh:8`
-  lists `git` among the allowed externals; `relay_hash()`
+  'git --version'`), so 2.20 is the minimum doctor enforces. The `Allowed
+  externals` list names `git` (`relay-lib.sh:7-8`); `relay_hash()`
   (`relay-lib.sh:434-482`) uses `git hash-object` as its first-choice content
   hash.
 - **jq** — checked by `relay-doctor.sh:94` (`check_tool jq 1.6 'jq --version'`).
-  Used throughout for config (`cfg()`, `relay-supervisor.sh:79-82`) and for
-  the acceptance-command argv validation (`relay-supervisor.sh:141-149`).
+  Used throughout for config (`cfg()`, `relay-supervisor.sh:86-89`) and for
+  the acceptance-command argv validation (`relay-supervisor.sh:222-230`).
 - **claude** (Claude Code CLI) — checked by `relay-doctor.sh:96-109`, which
   gives the version probe its own 10-second timeout rather than a minimum
   version string; a broken install or a hung auth refresh must not stall an
-  unattended run at the starting line. `README.md:68-69` states a minimum of
-  2.1+; that number is not re-asserted anywhere in the code doctor runs, so
+  unattended run at the starting line. The README's Requirements list states
+  `Claude Code` 2.1+ as the minimum (`README.md:105-106`); that number is not
+  re-asserted anywhere in the code doctor runs, so
   treat the README figure as the stated intent and the timeout-guarded probe
   as what is actually enforced.
 - **POSIX utilities already on the box** — `relay-lib.sh:7-9` lists the
@@ -47,7 +48,7 @@ The excluded set and the specific fact behind each:
 
 - **node, python3/python** — not a portability fact so much as a promise:
   `no-deps.sh:31-32` bans them outright ("relay must not require python" /
-  "node"), and `README.md:69` states this as the deliberate policy, not an
+  "node"), and `README.md:106` states this as the deliberate policy, not an
   oversight.
 - **perl** — not in `no-deps.sh`'s scan list at all, and not named in
   `relay-lib.sh`'s allowed-externals comment either. It is simply never
@@ -93,7 +94,7 @@ The excluded set and the specific fact behind each:
   (`no-deps.sh:27`). `relay-doctor.sh:314-317` reads a credential file's
   permission bits with `ls -l | cut -c1-10` instead, calling `ls` "portable
   enough for a permission check." `relay_prune_sessions()`'s header makes
-  the same point about `find -mtime` versus `stat` (`relay-lib.sh:544-546`).
+  the same point about `find -mtime` versus `stat` (`relay-lib.sh:551-553`).
 - **`grep -P`** — unavailable on macOS's BSD grep (`no-deps.sh:33`). Every
   pattern in these scripts is plain ERE (`grep -E`), which macOS grep does
   support.
@@ -114,15 +115,15 @@ The excluded set and the specific fact behind each:
 
 ## bash 3.2 constraints
 
-macOS ships bash 3.2.57 and relay treats that as the floor
+macOS ships `bash` 3.2.57 and relay treats that as the floor
 (`no-bash4.sh:2-4`). Concretely, that rules out:
 
 - **Associative arrays** (`declare -A` / `local -A`) — bash 4+
   (`no-bash4.sh:27-28`).
 - **`mapfile` / `readarray`** — bash 4+ (`no-bash4.sh:29-30`).
-- **`${v^^}` / `${v,,}`** (case-folding expansion) — bash 4+
-  (`no-bash4.sh:31-32`). Case folding that is needed (e.g. `relay_uuid()`
-  lower-casing a UUID at `relay-lib.sh:378,389`) goes through `tr
+- **`${v^^}` / `${v,,}`** (case-folding expansion) — bash 4+, banned by their
+  own `scan` lines (`no-bash4.sh:31-32`). Case folding that is needed (e.g.
+  `relay_uuid()` lower-casing a UUID at `relay-lib.sh:378,385`) goes through `tr
   '[:upper:]' '[:lower:]'` instead, which is POSIX `tr`, not a bash
   built-in.
 - Also banned for the same bash-4+ reason: `wait -n` (4.3+), `coproc`,
@@ -216,7 +217,8 @@ BASH4: <explanation>
 repeated once per construct that matched anywhere, with a trailing blank
 line after each block (`printf 'BASH4: %s\n%s\n\n' "$2" "$_hits"`). A clean
 run instead prints `no-bash4: clean` (`no-bash4.sh:39`). Exit status is `0`
-on a clean scan, `1` if anything matched (`no-bash4.sh:12,24,40`).
+on a clean scan, `1` if anything matched — `FAIL` starts at zero, is set by
+`scan`, and is the exit status (`no-bash4.sh:12,24,40`).
 
 **`test/lint/no-deps.sh`** scans only `plugins/` (shipped code; tests and
 docs are explicitly allowed to name a forbidden tool in order to explain why
@@ -247,8 +249,8 @@ just recovers a crashed run more slowly.
 still alive by shelling out to `ps`. `ps` is not in the hard-dependency list
 above, and `test/lint/no-deps.sh` does not scan for it — its pattern list
 (`no-deps.sh:23-36`) has no `ps` entry, so a call to `ps` is not a lint
-failure the way a call to `timeout` or `stat -f` would be. `relay-lib.sh:8`
-does list `ps` among the "allowed externals" in its header comment, which
+failure the way a call to `timeout` or `stat -f` would be. `relay-lib.sh:7-8`
+does list `ps` among the `Allowed externals` in its header comment, which
 records intent without enforcing it.
 
 What matters is how the code resolves the ambiguity. `ps -p "$pid"` returns
@@ -294,11 +296,11 @@ without it, and says in the journal which mode it is in.
 
 Same category, different function. The sandbox-enforcement probe asks its
 throwaway session to attempt an egress connection with `curl`
-(`relay-settings.sh:441-444`), but `curl` appears nowhere in the
+(`relay-settings.sh:543-546`), but `curl` appears nowhere in the
 hard-dependency list and `no-deps.sh` does not scan for it either. On a box
 without it, the egress attempt produces no parseable `code=`/`rc=` result,
 `relay_settings_egress_verdict()` reports `inconclusive`
-(`relay-settings.sh:344-352`), and the run **proceeds** — journaled as
+(`relay-settings.sh:424-441`), and the run **proceeds** — journaled as
 `probe.egress inconclusive` — on the strength of the denyRead canary, which
 needs nothing but the filesystem and has already proven the sandbox is on.
 Only a `reachable` verdict refuses the run. So `curl` buys a stronger

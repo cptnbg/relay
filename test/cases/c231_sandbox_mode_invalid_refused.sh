@@ -6,7 +6,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE/work"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/work/RUN.md"
+mkrunmd "$STATE"
 printf '# Plan\n\n1. step one\n' > "$PROJ/plan.md"
 
 cat > "$STATE/config.json" <<'EOF'
@@ -34,6 +34,7 @@ assert_no_file "$RELAY_MOCK_DIR/actions" "c231_no_session_invocations"
 # A valid `disabled` value is accepted at this gate and runs to completion.
 STATE2="$PWD/state2"
 mkdir -p "$STATE2/work"
+mkrunmd "$STATE2"
 printf '{"max_sessions":2,"sandbox_mode":"disabled"}\n' > "$STATE2/config.json"
 mkconsent "$STATE2"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE2" >"$PWD/out2.log" 2>"$PWD/err2.log"

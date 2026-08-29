@@ -26,8 +26,8 @@ IFS=$' \t\n'
 # Flags relay must never pass, and must always pass.
 # ---------------------------------------------------------------------------
 # --dangerously-skip-permissions : would void every deny rule.
-# --bare                         : skips hooks (kills the context guard) and is
-#                                  reserved exclusively for --hardened mode.
+# --bare                         : skips hooks, which kills the context guard.
+#                                  Refused unconditionally, in every mode.
 # --no-session-persistence       : destroys the transcript the guard reads.
 # --safe-mode                    : disables ALL customizations, including relay's
 #                                  own hooks, while permissions "work normally".
@@ -239,10 +239,13 @@ EOF
 # Emits the complete inline --settings JSON on stdout.
 #
 # The second argument is the session-WRITABLE work dir ($STATE/work), NOT the
-# whole state dir. allowWrite is exactly three entries — the project, that work
-# dir, and $TMPDIR (which the session's own build tools need) — so a
-# prompt-injected session cannot write state.json/journal.log/exec.json/locks/
-# — those live at the supervisor-only state root, one level up, out of reach.
+# whole state dir. In enforced mode allowWrite is exactly three entries — the
+# project, that work dir, and $TMPDIR (which the session's own build tools need)
+# — so a prompt-injected session cannot write state.json/journal.log/exec.json/
+# locks/: those live at the supervisor-only state root, one level up, out of
+# reach. In disabled mode there is no sandbox and therefore no allowWrite at
+# all; the same files are named in the deny list instead, which binds the
+# Write/Edit tools and not Bash. Convention there, not a boundary.
 # ---------------------------------------------------------------------------
 relay_settings_build() {
   _proj="${1:?project dir required}"

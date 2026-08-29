@@ -62,13 +62,27 @@ mechanically forces re-consent. The commitments:
    the settings payload it sent was actually accepted — because `claude -p`
    silently ignores a payload that fails validation. In the default `enforced`
    mode that proof is the sandbox itself confining a read and an egress attempt.
-   The sandbox is switched off only by an explicit per-project opt-in recorded
-   at `/relay-init` (`sandbox_mode: "disabled"`), which is covered by the
-   consent notice, surfaced by `/relay-status` and `/relay-doctor`, and still
+   The sandbox is switched off only by an explicit per-project opt-in — the
+   `sandbox_mode` key in that project's `config.json`, set to `"disabled"`.
+   `/relay-init` is where the operator is asked for it and is the only path that
+   records consent; the key can also be edited directly, which is the same
+   deliberate act by another door and is documented in the README. Either way it
+   is covered by the consent notice, surfaced by `/relay-status` and
+   `/relay-doctor`, and still
    probed before every run — there the proof is that relay's own inline hook
    fired and that reads really are unconfined, so a dropped payload and a
    working full-trust run cannot be mistaken for one another. Relay never
    infers the mode, and never falls back to it.
+
+   Two environment variables defeat this on purpose, and both are the test
+   suite's, not a user's: `RELAY_SKIP_PROBE=1` skips the acceptance probe and
+   `RELAY_SKIP_SELFTEST=1` skips the proof that the injection and
+   guardrail-drift filters fire under this machine's `grep`. Anyone who can set
+   them can already run any command as you, so they are not a privilege
+   boundary — but a commitment stated without them would be false, and this
+   file does not do that. Neither is read from config, neither is settable by a
+   repository, and a run started with either set is a run whose protections
+   were asserted rather than demonstrated.
 5. Relay registers no global hooks; its context guard exists only inside
    sessions relay itself started.
 6. A repository-tracked config can never make relay execute a command.

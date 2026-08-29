@@ -8,7 +8,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE/work"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/work/RUN.md"
+mkrunmd "$STATE"
 printf '# Plan\n\n1. step one\n' > "$PROJ/plan.md"
 
 cat > "$STATE/config.json" <<'EOF'
@@ -44,6 +44,7 @@ assert_no_file "$STATE/run/acceptance.log" "c205_no_acceptance_log"
 # Missing exec_hash entirely = never approved = preflight refusal.
 STATE2="$PWD/state2"
 mkdir -p "$STATE2/work"
+mkrunmd "$STATE2"
 printf '{"max_sessions":3}\n' > "$STATE2/config.json"
 mkconsent "$STATE2"
 printf '{"acceptance_cmd":["true"]}\n' > "$STATE2/exec.json"
@@ -59,6 +60,7 @@ assert_grep "$PWD/err2.log" '/relay-approve' "c205_missing_hash_remedy"
 # and a work step must land a real commit for verify_complete's commit check.
 STATE3="$PWD/state3"
 mkdir -p "$STATE3/work" "$PWD/mock3"
+mkrunmd "$STATE3"
 printf '{"max_sessions":3}\n' > "$STATE3/config.json"
 mkconsent "$STATE3"
 printf '{"acceptance_cmd":["true"]}\n' > "$STATE3/exec.json"

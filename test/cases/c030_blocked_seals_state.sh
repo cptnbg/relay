@@ -6,7 +6,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/RUN.md"
+mkrunmd "$STATE"
 printf '# Plan\n\n1. step one\n2. step two\n' > "$PROJ/plan.md"
 git -C "$PROJ" add -A >/dev/null 2>&1
 git -C "$PROJ" -c user.name=mock -c user.email=mock@example.com commit -q -m "chore: add plan.md" >/dev/null 2>&1

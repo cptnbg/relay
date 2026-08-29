@@ -60,11 +60,30 @@ The hook and supervisor suite, which discovers and runs every file under
 bash test/run.sh
 ```
 
-Both static linters:
+The three static linters:
 
 ```
 bash test/lint/no-bash4.sh
 bash test/lint/no-deps.sh
+bash test/lint/citations.sh
+```
+
+`citations.sh` is the one that will surprise you. Relay's documentation cites
+its own source by line — `relay-supervisor.sh:NNN`, `(:NNN)`, `**Line NNN**`,
+`(lines N-M)` — and those coordinates rot on every edit that adds or removes
+a line above them. The gate resolves each citation and then requires the cited
+range to still mention what the sentence around it is about, so moving a
+function is a documentation failure and not merely a code change. It prints,
+for each stale citation, where the identifier it was looking for lives now, so
+the correction usually comes with the failure. Run it with `--verbose` to see
+what each passing citation matched on, and read its header before arguing with
+it: it says plainly what it can and cannot prove.
+
+A document whose bare `**Line NNN**` references all belong to one file declares
+that file once, near the top:
+
+```
+<!-- citations-default: plugins/relay/scripts/relay-supervisor.sh -->
 ```
 
 **Version skew is real.** CI installs shellcheck from Ubuntu's apt (0.9.0 at
@@ -76,11 +95,12 @@ disagrees with you about shellcheck, CI is the one that decides.
 
 CI (`.github/workflows/ci.yml`) runs all of the above, plus `shellcheck -s
 bash -S warning` over the shipped scripts, the test libraries and the mock
-(`.github/workflows/ci.yml:14-21`), and reruns `test/run.sh` explicitly under
-macOS's own `/bin/bash` 3.2.57 in addition to whatever bash a Linux runner
-ships (`.github/workflows/ci.yml:86-88`). Matching that locally before
-opening a pull request is cheaper than finding out a bash-3.2-only construct
-broke on the runner.
+(`.github/workflows/ci.yml:23-34`, two passes — the second adds
+`-e SC2034,SC2154` for the sourced case and hook fragments), and reruns
+`test/run.sh` explicitly under macOS's own `/bin/bash` 3.2.57 in addition to
+whatever bash a Linux runner ships (`.github/workflows/ci.yml:108-113`).
+Matching that locally before opening a pull request is cheaper than finding out
+a bash-3.2-only construct broke on the runner.
 
 If a suite fails in a way that looks unrelated to what you changed and
 you're in a sandboxed or containerized environment, read
@@ -104,12 +124,12 @@ actively refuses to run if it is ever asked to pass
 `--dangerously-skip-permissions`, `--bare`, `--no-session-persistence` or
 `--safe-mode` (exit 99, `test/bin/claude:66-73`), and refuses to run unless
 both `--setting-sources` (it records the value but asserts only presence,
-`test/bin/claude:119-120,141-144`) and `--strict-mcp-config` are present in
-argv (exit 98, `test/bin/claude:141-148`) — so it also catches a regression of
+`test/bin/claude:120-121,142-145`) and `--strict-mcp-config` are present in
+argv (exit 98, `test/bin/claude:142-149`) — so it also catches a regression of
 relay's own settings-trust fix, not only stray API spend.
 
 `test/run.sh` also runs a self-check as its very first case
-(`test/run.sh:158-167`): it asserts `command -v claude` resolves to exactly
+(`test/run.sh:163-171`): it asserts `command -v claude` resolves to exactly
 `$ROOT/test/bin/claude`. If a local `PATH`, a careless test fixture, or a
 future change ever let the real CLI shadow the mock, this fails loudly
 instead of quietly billing an account.
@@ -163,16 +183,21 @@ establishes, and the caps recorded in the source:
   (including when the hook path and project path both contain a space), and
   enforces sandbox `denyRead` — together, not as three claims tested in
   isolation (`docs/security.md`, finding 4).
-- **`probe0-sandbox-off.sh`** — two invocations, `--max-budget-usd 0.10` each
-  (`probe0-sandbox-off.sh:83`). Establishes that `sandbox: {"enabled": false}`
+- **`probe0-sandbox-off.sh`** — three invocations, `--max-budget-usd 0.10` each
+  (`probe0-sandbox-off.sh:130`). Establishes that `sandbox: {"enabled": false}`
   delivered inline is honoured rather than silently dropped, and that relay can
   still tell those two apart. Case 1 sends the full-trust payload and expects a
   readable canary, reachable egress, and relay's inline hook to have written
-  `run/hook.alive`; case 2 sends the same payload with the `hooks` block removed
-  and expects the marker to be absent, which is the control proving the marker is
-  real evidence rather than a coincidence. This is what `sandbox_mode: "disabled"`
-  rests on: with no sandbox, the hook is the only observable proof the payload was
-  accepted at all.
+  `run/hook.alive` (`probe0-sandbox-off.sh:152-154`); case 2 sends the same
+  payload with the `hooks` block removed and expects the marker to be absent
+  (`probe0-sandbox-off.sh:162-164`); case 3 keeps the `hooks` block but makes the
+  rest of the payload invalid and expects the marker to be absent again
+  (`probe0-sandbox-off.sh:167-169`). Case 2 alone only shows *no hooks key ⇒ no
+  marker*, which is the converse of what production infers — production reads *no
+  marker ⇒ the payload was rejected* — so case 3 is the one that exercises the
+  direction actually relied on. This is what `sandbox_mode: "disabled"` rests on:
+  with no sandbox, the hook is the only observable proof the payload was accepted
+  at all.
 - **`probe0-permission-mode.sh`** — four invocations, `--max-budget-usd 0.15`
   each (`probe0-permission-mode.sh:70`). Establishes what
   `--permission-mode dontAsk` actually permits: a deny-only payload refuses
@@ -181,7 +206,7 @@ establishes, and the caps recorded in the source:
   working directory (case C), and a specific `deny` rule still wins over a
   broad `allow` (case D). This is the probe that found relay's first shipped
   settings payload could not write a single file
-  (`docs/security.md:127-131`).
+  (`docs/security.md:169-176`).
 
 No total dollar cost for a full run of all six is recorded anywhere in this
 repository. The figures above are per-invocation caps taken directly from
@@ -194,7 +219,7 @@ one whose surface you believe you touched. `docs/security.md` states plainly
 that every finding in it "was verified empirically against Claude Code
 2.1.233" (`docs/security.md:3-4`), and its own standing design rules record
 that a version change "forces re-running doctor, because the settings
-schema may have moved" (`docs/security.md:184-185`) — the same reasoning
+schema may have moved" (`docs/security.md:244-245`) — the same reasoning
 applies to the probes that established those settings behave the way relay
 assumes. A claim about CLI behaviour — anything of the shape "Claude Code
 does X when given flag Y" — is not accepted into this repository, in
@@ -207,7 +232,7 @@ default-deny behaviour the first time (`docs/security.md`, finding 6).
 
 `SECURITY.md` lists six load-bearing commitments and says directly: "These
 are load-bearing. A change that relaxes one is a MAJOR version bump and
-invalidates recorded consent" (`SECURITY.md:38-39`) — and, since the consent
+invalidates recorded consent" (`SECURITY.md:47-48`) — and, since the consent
 gate landed, that invalidation is enforced by `/relay-doctor`'s
 `consent.notice_hash` check rather than merely asserted. `CHANGELOG.md` repeats
 the same rule as part of its own versioning policy: Keep-a-Changelog format,

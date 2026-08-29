@@ -11,7 +11,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/RUN.md"
+mkrunmd "$STATE"
 # plan.md is left UNCOMMITTED on purpose, exactly as c020 does: the mock's
 # "complete" behaviour only writes into $STATE, so its blind `git add -A` needs
 # something in the tree to turn into the new commit verify_complete demands.

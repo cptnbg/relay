@@ -6,7 +6,7 @@ STATE="$PWD/state"
 mkrepo "$PROJ"
 
 mkdir -p "$STATE/work"
-printf '# RUN\n\nMinimal run.\n' > "$STATE/work/RUN.md"
+mkrunmd "$STATE"
 printf '# Plan\n\n1. step one\n' > "$PROJ/plan.md"
 
 cat > "$STATE/config.json" <<'EOF'
@@ -33,6 +33,7 @@ assert_no_file "$RELAY_MOCK_DIR/argv.log" "c203_claude_never_invoked"
 # The three valid tiers must still be accepted (sonnet spot-check).
 STATE2="$PWD/state2"
 mkdir -p "$STATE2/work"
+mkrunmd "$STATE2"
 printf '{"max_sessions":2,"model_tier":"sonnet"}\n' > "$STATE2/config.json"
 mkconsent "$STATE2"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE2" >"$PWD/out2.log" 2>"$PWD/err2.log"

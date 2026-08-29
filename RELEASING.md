@@ -11,7 +11,7 @@ in it.
 ## 1. Decide the version
 
 SemVer, with the one addition recorded in `CHANGELOG.md:3-5` and
-`SECURITY.md:38-39`: a change that relaxes any commitment in `SECURITY.md` is a
+`SECURITY.md:47-48`: a change that relaxes any commitment in `SECURITY.md` is a
 MAJOR bump, and it invalidates recorded user consent. That is not a formality,
 and it is no longer only a policy: consent is recorded as a hash of the exact
 notice text (`consent.notice_hash`), and doctor refuses to run when the
@@ -215,7 +215,7 @@ exactly why relay records the CLI version at doctor time.
 
 No shipped script fetches, installs, or updates anything. The only install path
 in this repository is the `/plugin install relay@relay` line a user types
-(`README.md:77`), so upgrading is always a deliberate user action.
+(`README.md:114`), so upgrading is always a deliberate user action.
 
 Say so in release notes, and tell users to read the diff before they take a new
 version:
@@ -230,6 +230,11 @@ diff should read that one.
 
 ## 9. Publishing is a human step
 
-relay never pushes — not a branch, not a tag, not a release. This repository
-has no remote configured. Creating one, pushing the signed tag, and uploading
-the archive and its sha256 are all done by a person, outside relay, on purpose.
+relay never pushes — not a branch, not a tag, not a release. Nothing relay
+executes has a code path that reaches a remote; commitment 2 in `SECURITY.md` is
+that promise and `Bash(git push:*)` is denied in both sandbox modes. The
+repository does have an `origin` now (it is published at
+`github.com/cptnbg/relay`), which is exactly why the sentence has to be about
+relay's behaviour rather than about the absence of a remote: pushing the signed
+tag and uploading the archive and its sha256 are done by a person, outside
+relay, on purpose.
