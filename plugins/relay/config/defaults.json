@@ -3,6 +3,7 @@
 
   "max_sessions": 12,
   "session_timeout_secs": 5400,
+  "max_wall_secs": 0,
   "stall_limit": 3,
   "fastfail_limit": 3,
   "min_session_secs": 45,
@@ -22,6 +23,7 @@
   "max_usage_retries": 20,
 
   "allow_domains": "",
+  "allow_tools_extra": "",
   "sandbox_mode": "enforced",
   "keep_sessions": 5,
   "keep_days": 7

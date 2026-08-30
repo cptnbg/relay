@@ -3,8 +3,8 @@
 # inline --settings payload, and — critically — can relay still tell an accepted
 # payload apart from one the CLI silently discarded?
 #
-# THIS PROBE COSTS MONEY. It makes real API calls and is deliberately NOT part
-# of test/run.sh. Run it by hand before shipping a release that touches
+# THIS PROBE COSTS MONEY. It makes real API calls (four cases) and is
+# deliberately NOT part of test/run.sh. Run it by hand before shipping a release that touches
 # sandbox_mode, and re-run it whenever the CLI version changes.
 #
 # Why it exists: with the sandbox off, "the canary was readable and the host
@@ -72,6 +72,7 @@ _rand_uuid() {
 SID_OFF=$(_rand_uuid)
 SID_NOHOOKS=$(_rand_uuid)
 SID_INVALID=$(_rand_uuid)
+SID_REAL=$(_rand_uuid)
 HOOKDIR="$OUT/hookdir"
 mkdir -p "$HOOKDIR/run"
 : > "$HOOKDIR/.relay"
@@ -169,9 +170,63 @@ rm -f "$READPROOF" "$NETFILE"
 run_case "invalid" "$(mkpayload invalid)" "$PROMPT" "$SID_INVALID"
 printf 'rc=%s  hook=%s\n' "$(cat "$OUT/invalid.rc")" "$(cat "$OUT/invalid.hook")" | tee -a "$RESULTS"
 
+echo "--- case 4: the REAL v1.1 disabled payload (relay_settings_build) ---" | tee -a "$RESULTS"
+# Everything earlier probes hand-built payload shapes; this case sends what
+# production actually sends, because that is the thing 1.1.0 changes: the
+# disabled allow list gains WebFetch/WebSearch and the remote deny narrows to
+# mutating subcommands. Three assertions ride one session:
+#   (a) WebFetch is genuinely usable (not just listed): the model fetches
+#       https://example.com and writes the status to a proof file;
+#   (b) `git remote -v` passes (the read form the old broad deny caught);
+#   (c) `git remote set-url` is DENIED — this is the only empirical test
+#       anywhere of a DEPTH-3 deny prefix (`Bash(git remote set-url:*)`);
+#       the repo precedent is depth-2 and nothing else verifies the matcher
+#       goes deeper. If (c) fails, v1.1 ships WITHOUT the narrowed deny
+#       (fallback: no remote deny in disabled mode at all).
+# shellcheck source=/dev/null
+. "$ROOT/plugins/relay/scripts/relay-settings.sh"
+REPO4="$OUT/repo4"
+rm -rf "$REPO4"; mkdir -p "$REPO4"
+git -C "$REPO4" init -q 2>/dev/null
+git -C "$REPO4" remote add origin https://example.com/placeholder.git 2>/dev/null
+REAL_PAYLOAD=$(relay_settings_build "$REPO4" "$HOOKDIR" "$HOOK" "" disabled "")
+WEBPROOF="$OUT/webproof.txt"
+REMOTEPROOF="$OUT/remoteproof.txt"
+rm -f "$WEBPROOF" "$REMOTEPROOF"
+PROMPT4="You are in a git repository. Do exactly these four things, in order, each as its own tool call, and do not stop if one is refused — a refusal is an expected result to record:
+1. Use the WebFetch tool on https://example.com with prompt 'say OK'. Then use the Bash tool to run exactly: printf 'webfetch=attempted\n' > '$WEBPROOF'
+2. Use the Bash tool to run exactly: git remote -v > '$REMOTEPROOF' 2>&1; true
+3. Use the Bash tool to run exactly: git remote set-url origin https://example.invalid/changed.git
+4. Reply DONE."
+( cd "$REPO4" || exit 1
+  RELAY_SESSION_ID="$SID_REAL" RELAY_DIR="$HOOKDIR" \
+  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 \
+  $TIMEOUT claude -p "$PROMPT4" \
+    --model haiku \
+    --session-id "$SID_REAL" \
+    --permission-mode dontAsk \
+    --setting-sources user \
+    --strict-mcp-config \
+    --settings "$REAL_PAYLOAD" \
+    --output-format json \
+    --max-budget-usd 0.25 \
+    < /dev/null > "$OUT/real.json" 2> "$OUT/real.err"
+)
+printf '%s' "$?" > "$OUT/real.rc"
+REMOTE_READ="denied-or-missing"
+grep -q 'example.com/placeholder' "$REMOTEPROOF" 2>/dev/null && REMOTE_READ="passed"
+SETURL="MUTATED (deny did NOT fire)"
+_cururl=$(git -C "$REPO4" config --get remote.origin.url 2>/dev/null)
+[ "$_cururl" = "https://example.com/placeholder.git" ] && SETURL="unchanged (deny fired or call refused)"
+WEBFETCH_DENIED=$(jq -r '[(.permission_denials // [])[] | select(.tool_name == "WebFetch")] | length' < "$OUT/real.json" 2>/dev/null)
+SETURL_DENIED=$(jq -r '[(.permission_denials // [])[] | select(.tool_name == "Bash")
+                        | select((.tool_input.command // "") | contains("set-url"))] | length' < "$OUT/real.json" 2>/dev/null)
+printf 'rc=%s  webfetch_denials=%s  remote_v=%s  seturl_denials=%s  origin=%s\n' \
+  "$(cat "$OUT/real.rc")" "${WEBFETCH_DENIED:-?}" "$REMOTE_READ" "${SETURL_DENIED:-?}" "$SETURL" | tee -a "$RESULTS"
+
 echo | tee -a "$RESULTS"
 echo "--- result envelopes ---" | tee -a "$RESULTS"
-for l in off nohooks invalid; do
+for l in off nohooks invalid real; do
   jq -r '{is_error, subtype, terminal_reason, permission_denials: (.permission_denials|length)}
          | to_entries | map("\(.key)=\(.value|tostring)") | join("  ")' \
      < "$OUT/$l.json" 2>/dev/null | sed "s/^/$l: /" | tee -a "$RESULTS"
@@ -192,3 +247,8 @@ echo "If case1 shows canary=unreadable, the CLI did not honour enabled:false and
 echo "relay_settings_probe_disabled's assertion (c) is what will catch it." | tee -a "$RESULTS"
 echo "If case1 shows hook=MISSING, the payload shape was rejected: fall back to" | tee -a "$RESULTS"
 echo "the full sandbox object with enabled:false and re-run this probe." | tee -a "$RESULTS"
+echo "  case4: webfetch_denials=0, remote_v=passed, seturl_denials=1, origin unchanged" | tee -a "$RESULTS"
+echo "         (WebFetch allowed AND usable; read-form remote passes; the depth-3" | tee -a "$RESULTS"
+echo "          deny prefix actually matches. seturl_denials=0 with origin MUTATED" | tee -a "$RESULTS"
+echo "          means depth-3 prefixes do NOT match: ship 1.1 without the narrowed" | tee -a "$RESULTS"
+echo "          remote deny — drop it from the disabled branch entirely.)" | tee -a "$RESULTS"

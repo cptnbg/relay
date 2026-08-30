@@ -124,7 +124,7 @@ actively refuses to run if it is ever asked to pass
 `--dangerously-skip-permissions`, `--bare`, `--no-session-persistence` or
 `--safe-mode` (exit 99, `test/bin/claude:66-73`), and refuses to run unless
 both `--setting-sources` (it records the value but asserts only presence,
-`test/bin/claude:120-121,142-145`) and `--strict-mcp-config` are present in
+`test/bin/claude:120-121, 142-145`) and `--strict-mcp-config` are present in
 argv (exit 98, `test/bin/claude:142-149`) — so it also catches a regression of
 relay's own settings-trust fix, not only stray API spend.
 
@@ -183,8 +183,8 @@ establishes, and the caps recorded in the source:
   (including when the hook path and project path both contain a space), and
   enforces sandbox `denyRead` — together, not as three claims tested in
   isolation (`docs/security.md`, finding 4).
-- **`probe0-sandbox-off.sh`** — three invocations, `--max-budget-usd 0.10` each
-  (`probe0-sandbox-off.sh:130`). Establishes that `sandbox: {"enabled": false}`
+- **`probe0-sandbox-off.sh`** — four invocations, `--max-budget-usd` 0.10 for
+  cases 1-3 and 0.25 for case 4 (`probe0-sandbox-off.sh:131,212`). Establishes that `sandbox: {"enabled": false}`
   delivered inline is honoured rather than silently dropped, and that relay can
   still tell those two apart. Case 1 sends the full-trust payload and expects a
   readable canary, reachable egress, and relay's inline hook to have written
@@ -198,13 +198,15 @@ establishes, and the caps recorded in the source:
   direction actually relied on. This is what `sandbox_mode: "disabled"` rests on:
   with no sandbox, the hook is the only observable proof the payload was accepted
   at all.
-- **`probe0-permission-mode.sh`** — four invocations, `--max-budget-usd 0.15`
+- **`probe0-permission-mode.sh`** — five invocations, `--max-budget-usd 0.15`
   each (`probe0-permission-mode.sh:70`). Establishes what
   `--permission-mode dontAsk` actually permits: a deny-only payload refuses
   a plain project-local `Write` (case A), a broad `allow` list lets that
   same write through (case B), a bare `Read` allow rule reaches outside the
-  working directory (case C), and a specific `deny` rule still wins over a
-  broad `allow` (case D). This is the probe that found relay's first shipped
+  working directory (case C), a specific `deny` rule still wins over a
+  broad `allow` (case D), and a denial leaves the session healthy with
+  entries carrying exactly `tool_name`/`tool_use_id`/`tool_input` (case E —
+  the shape the supervisor's `session.denials` telemetry parses). This is the probe that found relay's first shipped
   settings payload could not write a single file
   (`docs/security.md:169-176`).
 
@@ -219,7 +221,7 @@ one whose surface you believe you touched. `docs/security.md` states plainly
 that every finding in it "was verified empirically against Claude Code
 2.1.233" (`docs/security.md:3-4`), and its own standing design rules record
 that a version change "forces re-running doctor, because the settings
-schema may have moved" (`docs/security.md:244-245`) — the same reasoning
+schema may have moved" (`docs/security.md:267-268`) — the same reasoning
 applies to the probes that established those settings behave the way relay
 assumes. A claim about CLI behaviour — anything of the shape "Claude Code
 does X when given flag Y" — is not accepted into this repository, in

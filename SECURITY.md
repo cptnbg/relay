@@ -51,7 +51,7 @@ mechanism, not an assertion: consent is recorded as the git blob hash of the
 exact notice text the user accepted (`consent.notice_hash`), and
 `/relay-doctor` recomputes that hash from the installed SKILL.md and refuses
 to run when consent is absent or the notice no longer matches
-(`plugins/relay/scripts/relay-doctor.sh:263-296`). Changing the terms
+(`plugins/relay/scripts/relay-doctor.sh:338-371`). Changing the terms
 mechanically forces re-consent. The commitments:
 
 1. Relay never passes `--dangerously-skip-permissions`.

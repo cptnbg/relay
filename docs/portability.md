@@ -13,17 +13,17 @@ is the statement of record, in the library header every other script sources:
 - **bash 3.2** — the version gate at `relay-lib.sh:22-25` refuses to run
   under `BASH_VERSINFO[0] < 3`; the comment above it names the actual floor,
   bash 3.2.57 (macOS system bash), not bash 3 generically.
-  `relay-doctor.sh:88-92` checks the same thing at preflight and calls it out
+  `relay-doctor.sh:92-96` checks the same thing at preflight and calls it out
   by version string in its failure message.
-- **git** — checked by `relay-doctor.sh:93` (`check_tool git 2.20
+- **git** — checked by `relay-doctor.sh:97` (`check_tool git 2.20
   'git --version'`), so 2.20 is the minimum doctor enforces. The `Allowed
   externals` list names `git` (`relay-lib.sh:7-8`); `relay_hash()`
   (`relay-lib.sh:434-482`) uses `git hash-object` as its first-choice content
   hash.
-- **jq** — checked by `relay-doctor.sh:94` (`check_tool jq 1.6 'jq --version'`).
+- **jq** — checked by `relay-doctor.sh:98` (`check_tool jq 1.6 'jq --version'`).
   Used throughout for config (`cfg()`, `relay-supervisor.sh:86-89`) and for
-  the acceptance-command argv validation (`relay-supervisor.sh:222-230`).
-- **claude** (Claude Code CLI) — checked by `relay-doctor.sh:96-109`, which
+  the acceptance-command argv validation (`relay-supervisor.sh:232-240`).
+- **claude** (Claude Code CLI) — checked by `relay-doctor.sh:100-113`, which
   gives the version probe its own 10-second timeout rather than a minimum
   version string; a broken install or a hung auth refresh must not stall an
   unattended run at the starting line. The README's Requirements list states
@@ -85,13 +85,13 @@ The excluded set and the specific fact behind each:
   entirely.
 - **`realpath`** — not on stock macOS (`no-deps.sh:28`). `relay-doctor.sh`
   resolves at most one level of symlink by hand instead
-  (`relay-doctor.sh:67-72`: `readlink` plus a `case` on whether the target
+  (`relay-doctor.sh:71-76`: `readlink` plus a `case` on whether the target
   is absolute).
 - **`readlink -f`** — same absence on stock macOS, banned separately
   (`no-deps.sh:29`) because plain `readlink` (no `-f`) is fine and is what
-  `relay-doctor.sh:70` actually calls.
+  `relay-doctor.sh:74` actually calls.
 - **`stat`** — its flags differ between macOS (BSD) and Linux (GNU)
-  (`no-deps.sh:27`). `relay-doctor.sh:314-317` reads a credential file's
+  (`no-deps.sh:27`). `relay-doctor.sh:397-400` reads a credential file's
   permission bits with `ls -l | cut -c1-10` instead, calling `ls` "portable
   enough for a permission check." `relay_prune_sessions()`'s header makes
   the same point about `find -mtime` versus `stat` (`relay-lib.sh:551-553`).
@@ -135,7 +135,7 @@ macOS ships `bash` 3.2.57 and relay treats that as the floor
 are bash-2-era syntax, not a bash-4-ism — but this codebase does not use
 them anywhere in `plugins/`, and the one place an argv list has to be built
 dynamically shows why: `verify_complete()`'s acceptance-command runner
-(`relay-supervisor.sh:721-731`) builds its argument list with `set --`
+(`relay-supervisor.sh:941-972`) builds its argument list with `set --`
 against the positional parameters, not a bash array:
 
 ```
@@ -178,7 +178,7 @@ observed incident rather than a hypothetical:
   `sealed()`, `handoff_valid()`, `usage_limited()`, and every post-exit
   check in the predicate chain — depends on a non-zero return meaning
   "no", not "abort the whole process."
-- `relay-ctx.sh:22-23,29-34` gives the concrete case: "deliberately NO
+- `relay-ctx.sh:22-23, 29-34` gives the concrete case: "deliberately NO
   `trap ... ERR` and NO `set -e`. This script is predicate-heavy: `[ "$PCT"
   -ge "$CRIT" ]` returning 1 is an ANSWER, not an error. An ERR trap turns
   every such answer into a silent exit — which during development made the
@@ -296,11 +296,11 @@ without it, and says in the journal which mode it is in.
 
 Same category, different function. The sandbox-enforcement probe asks its
 throwaway session to attempt an egress connection with `curl`
-(`relay-settings.sh:543-546`), but `curl` appears nowhere in the
+(`relay-settings.sh:604-607`), but `curl` appears nowhere in the
 hard-dependency list and `no-deps.sh` does not scan for it either. On a box
 without it, the egress attempt produces no parseable `code=`/`rc=` result,
 `relay_settings_egress_verdict()` reports `inconclusive`
-(`relay-settings.sh:424-441`), and the run **proceeds** — journaled as
+(`relay-settings.sh:485-502`), and the run **proceeds** — journaled as
 `probe.egress inconclusive` — on the strength of the denyRead canary, which
 needs nothing but the filesystem and has already proven the sandbox is on.
 Only a `reachable` verdict refuses the run. So `curl` buys a stronger

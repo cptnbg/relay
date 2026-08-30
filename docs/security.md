@@ -42,6 +42,19 @@ failure mode for the disabled-mode probe: it fails **closed** (missing marker �
 refuse to run), which is the safe direction, but the cause is the model, not the
 payload. `docs/troubleshooting.md` lists it under the missing-marker symptom.
 
+**Findings 6 (all four cases) re-verified and case E added on 2.1.251
+(2026-08-30)** by `probe0-permission-mode.sh`: `dontAsk` still default-denies,
+deny still beats a broad allow, and — new — a denial leaves the session
+healthy (`is_error` false) with `permission_denials` entries carrying exactly
+`tool_name`/`tool_use_id`/`tool_input`, the shape the supervisor's
+`session.denials` telemetry parses. **Case 4 added to `probe0-sandbox-off.sh`
+the same day, on the REAL 1.1.0 disabled payload**: WebFetch allowed and
+working, `git remote -v` passing — and the planned
+`Bash(git remote set-url:*)` deny NEVER FIRING: a three-word deny prefix does
+not match on this CLI (the session mutated the origin with the rule in
+place, zero denials). That probe result is why 1.1.0 ships no `git remote`
+deny in disabled mode at all rather than a decorative narrowed one.
+
 **Finding 5 re-verified on 2.1.234 (2026-08-27)**, after `relay_settings_build`
 gained its `sandbox_mode` argument. `probe0-integration.sh` reports relay's real
 payload accepted, the exec-form hook firing through a path containing a space,
@@ -126,7 +139,7 @@ The trap: **a hook that writes outside `sandbox.filesystem.allowWrite` fails sil
 the symptom is indistinguishable from "the hook never fired."** This cost real debugging
 time during Phase 0. The sandbox's `allowWrite` is exactly the project, relay's
 session-writable work directory `$STATE/work/`, and `$TMPDIR`
-(`plugins/relay/scripts/relay-settings.sh:327`); the context guard writes only under
+(`plugins/relay/scripts/relay-settings.sh:388`); the context guard writes only under
 `$STATE/work/` — the supervisor-only remainder of the state directory (state.json,
 journal.log, exec.json, locks/) is deliberately *not* writable from inside a session.
 Any future hook must respect the same rule, and the test suite asserts it.
@@ -181,7 +194,17 @@ broad allow list intact.
 **Relay's response.** The payload carries an explicit `permissions.allow` list
 covering what a build session needs (`Read`, `Write`, `Edit`, `Glob`, `Grep`,
 `Bash`, `Task`, …) alongside the unchanged deny list. `WebFetch` and `WebSearch`
-are never allowed. Case C is why the allow list is bare tool names rather than
+are never allowed **in `enforced` mode**: they fetch from the CLI process, not
+from a sandboxed Bash child, and whether that in-process egress honours
+`sandbox.network.allowedDomains` is unverified — an unverified hole in the
+egress boundary is not a convenience worth having. In `disabled` mode both are
+allowed since 1.1.0, because there is no boundary for them to bypass (curl
+already reaches every host) and a refusal under `dontAsk` was pure friction —
+observed as real `permission_denials` in run telemetry. The same release adds
+`allow_tools_extra` (config, disabled-mode only) for tool names relay has never
+heard of: a `Monitor` call from a newer harness was observed denied mid-run,
+and a per-project config key beats a relay release every time that happens.
+Case C is why the allow list is bare tool names rather than
 path-scoped rules: every session must read `RUN.md`, which lives outside the
 project by design.
 
@@ -198,19 +221,19 @@ probe" below; rules 4-7 hold in both modes, unconditionally.
 1. **Fail closed on settings.** `-p` silently ignores settings files that fail validation,
    so relay must positively confirm enforcement before every run rather than assume it.
    The production acceptance probe (`relay_settings_probe`,
-   `plugins/relay/scripts/relay-settings.sh:494-594`) is `probe0-sandbox.sh`'s shape:
+   `plugins/relay/scripts/relay-settings.sh:555-655`) is `probe0-sandbox.sh`'s shape:
    in a relay-owned scratch directory (`$STATE/work/probe/`), assert that a `denyRead`
    canary is actually unreadable and that a host outside `network.allowedDomains` is
    actually unreachable. Both assertions leave evidence in files the supervisor reads,
    never in the model's prose: the canary read is redirected into a proof file (a
    sandbox that is off puts the canary's value there whatever the model then says,
-   `relay-settings.sh:533-541`), and the egress attempt records `code=`/`rc=` marker
+   `relay-settings.sh:594-602`), and the egress attempt records `code=`/`rc=` marker
    lines that the verdict parser reads by key — never "the first three digits in the
    file", which once misread curl's own "port 443" error text as an HTTP status and
-   refused a working sandbox (`relay-settings.sh:415-421`). The run is refused if the
+   refused a working sandbox (`relay-settings.sh:476-482`). The run is refused if the
    canary's value appears in the proof file, the session JSON, or stderr; if the probe
    session did not complete cleanly (`.is_error == false`); or if the egress verdict is
-   `reachable` (`relay-settings.sh:566-590`).
+   `reachable` (`relay-settings.sh:627-651`).
 
    One deliberate asymmetry, added when relay's own audit found the runtime probe testing
    only the canary while this rule claimed both: an egress attempt relay cannot interpret
@@ -251,7 +274,13 @@ probe" below; rules 4-7 hold in both modes, unconditionally.
 
 `sandbox_mode: "disabled"` is a per-project opt-in recorded at `/relay-init`. It emits
 `sandbox: {"enabled": false}` and opens the deny-list to operational commands, keeping
-only the never-push entries and the write-persistence guards. Sessions can then SSH,
+only the `git push` deny and the write-persistence guards. (Until 1.1.0 it also kept a
+broad `git remote` deny, which caught read-only `git remote -v` in real runs; the
+narrowing to mutating subcommands died in probe: a three-word deny prefix like
+`Bash(git remote set-url:*)` **never fires** on Claude Code 2.1.251 — the probe ran the
+mutation with the rule in place, zero denials, origin rewritten. A deny that
+demonstrably does not match is decorative, so it was dropped rather than narrowed;
+the residual is recorded under "What full trust actually costs".) Sessions can then SSH,
 reach any host, and read anything the user can read.
 
 The reason this needs its own probe rather than no probe is rule 1: `-p` silently ignores
@@ -262,7 +291,7 @@ payload means no hooks and no deny-list at all while the journal claims otherwis
 
 The discriminator is relay's own inline `PostToolUse` hook, which is delivered inside the
 same `--settings` payload. `relay_settings_probe_disabled`
-(`plugins/relay/scripts/relay-settings.sh:619-738`) supplies the environment the hook
+(`plugins/relay/scripts/relay-settings.sh:680-799`) supplies the environment the hook
 requires — `RELAY_SESSION_ID` (also passed as `--session-id`, so the id appears in the
 hook's stdin payload) and a `RELAY_DIR` holding a `.relay` marker — then asserts three
 things, refusing on each: the session completed cleanly; `run/hook.alive` exists, proving
@@ -317,6 +346,18 @@ around anyway. They are written down so the choice is informed, not so it is rev
 - **Persistence.** `Bash(crontab:*)`, `Bash(launchctl:*)`, `Bash(at:*)` and
   `Bash(systemctl:*)` are denied in `enforced` and lifted in `disabled`. A full-trust
   session can install something that outlives the run and every later relay session.
+- **Your git remotes.** Since 1.1.0 nothing in disabled mode denies `git remote`
+  at all (see "Trust mode inverts the probe" for why the narrowed deny was
+  dropped: the CLI does not match three-word deny prefixes). Relay itself still
+  never pushes — but a session can rewrite `origin`, and the accident that
+  outlives the run is YOUR next `git push` landing somewhere wrong. Check
+  `git remote -v` before pushing anything a full-trust run touched.
+- **The run's own history surfaces.** `$STATE/ledger.md` (the per-session run
+  arc rendered into later prompts) and the `gates_passed` record in
+  `state.json` are Bash-reachable in this mode like every other state file. The
+  ledger is re-filtered at render time and gate *definitions* are anchored
+  in memory (see below) — but a session determined to lie can mark gates
+  passed or rewrite history rows. Convention, not boundary, as ever here.
 - **Shell startup files the write guards miss.** The retained Write/Edit deny rules
   cover `~/.zshrc`, `~/.bashrc`, `~/.profile` and `~/.zprofile`. They do **not** cover
   `~/.zshenv`, which zsh sources for every invocation including non-interactive ones,
@@ -345,11 +386,15 @@ repository you would trust with your SSH keys, and re-read
   the whole readable filesystem. The remaining deny-list entries are honoured by the
   Write/Edit tools only, so relay's own `$STATE` files — journal, `state.json`,
   `probe.ok` — are protected there by convention rather than by enforcement. The one
-  check that still bites is the acceptance command's: before running it, relay re-reads
-  `exec.json` and requires both that its hash matches the recorded `exec_hash` *and* that
-  the argv still equals `ACCEPT_CMD_JSON`, the value captured in memory at preflight
-  (`relay-supervisor.sh:859-863`). Rewriting the command and its hash together on disk
-  therefore still fails, because the in-memory anchor predates any session.
+  checks that still bite are the in-memory anchors, which predate every session:
+  the acceptance command's (before running it, relay re-reads `exec.json` and requires
+  both that its hash matches the recorded `exec_hash` *and* that the argv still equals
+  `ACCEPT_CMD_JSON`, the value captured at preflight), the phase gates' (same dual
+  anchor over `GATES_JSON`, checked immediately before every gate execution), and the
+  RUN.md integrity guard's (the protected-region hash is computed at supervisor start
+  and held in memory, so a session that rewrites the mission still halts the run even
+  though it could also rewrite the on-disk baseline used for the diff). Rewriting any
+  of those files together with their recorded hashes therefore still fails.
 
 ## Local hygiene note
 

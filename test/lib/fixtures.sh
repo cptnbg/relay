@@ -62,7 +62,12 @@ EOF
 mkrunmd() {
   local state="$1" desc="${2:-Minimal run.}"
   mkdir -p "$state/work"
-  printf '# RUN\n\n%s\n' "$desc" > "$state/work/RUN.md"
+  # The "## Course corrections" marker is load-bearing: everything ABOVE it is
+  # the protected region the supervisor's RUN.md integrity guard hashes, and a
+  # RUN.md without the marker is protected whole-file — which would make even
+  # a review session's legitimate append a tamper halt. The fixture carries the
+  # marker for the same reason SKILL.md's template does.
+  printf '# RUN\n\n%s\n\n## Course corrections\n' "$desc" > "$state/work/RUN.md"
 }
 
 # --- internal helpers -------------------------------------------------
@@ -215,4 +220,15 @@ mkexec_hash() {
   f="$state/exec.json"
   h=$(jq -c '.acceptance_cmd' "$f" | git hash-object --stdin)
   jq --arg h "$h" '.exec_hash = $h' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+# Stamp exec.json with the gates_hash /relay-approve would record: the git blob
+# hash of the canonical compact-JSON form of the whole phase_gates array. One
+# hash over the set, deliberately — gates interact, so changing any one of them
+# must force re-approval of all of them.
+mkgates_hash() {
+  local state="$1" f h
+  f="$state/exec.json"
+  h=$(jq -c '.phase_gates' "$f" | git hash-object --stdin)
+  jq --arg h "$h" '.gates_hash = $h' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }

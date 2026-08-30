@@ -188,7 +188,8 @@ EOF
 #             curl, gh, docker, cloud CLIs, sudo) are all allowed. Only two
 #             classes stay denied, and NEITHER is a boundary once the sandbox is
 #             off — a session can `cat` or `>>` any readable path through Bash:
-#               * git push / git remote — commitment #2, relay never pushes;
+#               * git push — commitment #2, relay never pushes (the old broad
+#                 `git remote` deny is gone: probed decorative, see below);
 #               * Write/Edit-tool writes to ~/.claude, ~/.ssh, ~/.aws, shell rc
 #                 files, and relay's own state files — free footgun guards that
 #                 cost no operational capability (Bash bypasses them; the docs
@@ -198,9 +199,24 @@ relay_settings_deny_for_mode() {
   _dfm_mode="${1:-enforced}"
   _dfm_state="${2:-}"
   if [ "$_dfm_mode" = "disabled" ]; then
+    # `git remote` is not denied here at all, and that is a PROBED decision,
+    # not an oversight. The broad `Bash(git remote:*)` rule 1.0.x shipped
+    # caught `git remote -v` — a read-only inspection sessions genuinely reach
+    # for, observed denied in two separate real runs. The 1.1.0 design was to
+    # narrow it to the mutating subcommands (`git remote set-url:*` and
+    # friends), but probe0-sandbox-off case 4 showed a three-word deny prefix
+    # NEVER FIRES on Claude Code 2.1.251: the session ran
+    # `git remote set-url origin …` with the rule in place, zero
+    # permission_denials, origin mutated. A deny list that demonstrably does
+    # not match is worse than none — it reads as protection in every audit
+    # while stopping nothing — so the whole family is dropped rather than
+    # narrowed. What actually holds commitment #2 is the `git push` deny
+    # (two-word prefix, the depth the CLI provably matches) plus the fact that
+    # relay itself never pushes. The residual accident — a session rewriting
+    # origin so the HUMAN's next push lands somewhere wrong — is documented in
+    # docs/security.md's full-trust cost list instead of decoratively denied.
     cat <<'EOF'
 Bash(git push:*)
-Bash(git remote:*)
 EOF
     relay_settings_default_deny_writes
     if [ -n "$_dfm_state" ]; then
@@ -235,6 +251,47 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# relay_settings_allow_for_mode <mode> [extra_csv]
+# THE permission allow list, chosen by sandbox_mode — the counterpart of
+# relay_settings_deny_for_mode above, and like it the ONLY place the
+# trust-mode allow posture is decided.
+#
+#   enforced  exactly relay_settings_default_allow, byte for byte, and the
+#             extras argument is IGNORED outright — not merely defaulted away.
+#             Two reasons. The enforced payload is a release-asserted constant
+#             (byte-identical to what 1.0.0 shipped), so no config value may
+#             be able to perturb it. And WebFetch/WebSearch stay denied here
+#             on purpose: they fetch from the CLI process itself, not from a
+#             sandboxed Bash child, and whether that in-process egress honours
+#             sandbox.network.allowedDomains is UNVERIFIED — an unverified
+#             hole in the egress boundary is not a convenience worth having.
+#   disabled  the default list plus WebFetch, WebSearch, and any names from
+#             extra_csv. There is no boundary for a web tool to bypass — curl
+#             already reaches every host — so refusing them under dontAsk was
+#             pure friction: a refused call, a wasted turn, a model routing
+#             around policy it cannot see. The extras exist because the CLI
+#             grows tools relay has never heard of (a `Monitor` call was
+#             observed DENIED in a real run), and a per-project config key
+#             beats a relay release every time that happens.
+#
+# Deduped with the same `awk '!seen'` idiom the domain list uses, so listing
+# Bash again in the extras is harmless.
+# ---------------------------------------------------------------------------
+relay_settings_allow_for_mode() {
+  _afm_mode="${1:-enforced}"
+  _afm_extra="${2:-}"
+  if [ "$_afm_mode" = "disabled" ]; then
+    { relay_settings_default_allow
+      printf 'WebFetch\nWebSearch\n'
+      if [ -n "$_afm_extra" ]; then printf '%s\n' "$_afm_extra" | tr ',' '\n'; fi
+    } | grep -v '^[[:space:]]*$' | awk '!seen[$0]++'
+  else
+    relay_settings_default_allow
+  fi
+  unset _afm_mode _afm_extra
+}
+
+# ---------------------------------------------------------------------------
 # relay_settings_build <project_dir> <work_dir> <hook_path> [extra_domains_csv] [sandbox_mode]
 # Emits the complete inline --settings JSON on stdout.
 #
@@ -257,6 +314,10 @@ relay_settings_build() {
   # build failure, surfaced as EX_PREFLIGHT by the supervisor's braces — the
   # supervisor also validates the value first, this is the second line.
   _mode="${5:-enforced}"
+  # Extra tool names for the allow list. Honoured only in disabled mode —
+  # relay_settings_allow_for_mode ignores it under enforced, which is what
+  # keeps the enforced payload a constant no config value can perturb.
+  _extra_tools="${6:-}"
   case "$_mode" in
     enforced|disabled) : ;;
     *) return 1 ;;
@@ -299,7 +360,7 @@ relay_settings_build() {
     --arg mode "$_mode" \
     --argjson domains "$_domains_json" \
     --argjson denyread "$(relay_settings_default_denyread | jq -R . | jq -s .)" \
-    --argjson allow "$(relay_settings_default_allow | jq -R . | jq -s .)" \
+    --argjson allow "$(relay_settings_allow_for_mode "$_mode" "$_extra_tools" | jq -R . | jq -s .)" \
     --argjson deny "$( relay_settings_deny_for_mode "$_mode" "$_state_root" | jq -R . | jq -s .)" \
     '
     {

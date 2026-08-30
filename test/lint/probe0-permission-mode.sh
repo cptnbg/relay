@@ -132,6 +132,42 @@ else
   report 1 "D: control failed — allow was not live, so D proves nothing"
 fi
 
+# --- E. the refusal SHAPE under dontAsk ----------------------------------
+# v1.1's denial telemetry (relay-supervisor.sh, journal event session.denials)
+# parses .permission_denials out of the envelope. This case pins what it
+# parses: a denied call leaves the session healthy (is_error false), and each
+# denial entry carries exactly the three documented keys — tool_name,
+# tool_use_id, tool_input — with NO rule attribution. If a future CLI adds or
+# renames keys, this is the case that notices before the telemetry misreads.
+rm -f "$WORK/e.txt"
+SET_E=$(jq -nc '{permissions:{allow:["Read","Write","Edit","Bash","Glob","Grep"],
+                              deny:[]}}')
+run_case "E refusal-shape" "$SET_E" \
+  'Use the WebFetch tool on https://example.com with prompt OK. Whatever happened, then use the Write tool to create e.txt containing DONE. A refused tool call is an expected result: record it by continuing, not by stopping.' \
+  "$SCRATCH/e.json"
+if jq -e '.is_error == false' < "$SCRATCH/e.json" >/dev/null 2>&1; then
+  report 0 "E: a denied tool call left the session healthy (is_error false)"
+else
+  report 1 "E: session errored on a mere denial — telemetry would misread runs"
+fi
+if jq -e '[.permission_denials[]? | select(.tool_name == "WebFetch")] | length >= 1' \
+     < "$SCRATCH/e.json" >/dev/null 2>&1; then
+  report 0 "E: WebFetch (not in allow) appears in permission_denials"
+else
+  report 1 "E: no WebFetch denial recorded — dontAsk default-deny may have changed"
+fi
+_e_keys=$(jq -r '[.permission_denials[]? | keys[]] | unique | join(",")' < "$SCRATCH/e.json" 2>/dev/null)
+if [ "$_e_keys" = "tool_input,tool_name,tool_use_id" ]; then
+  report 0 "E: denial entries carry exactly tool_input,tool_name,tool_use_id"
+else
+  report 1 "E: denial entry keys changed: [$_e_keys] — update session.denials parsing"
+fi
+if [ -f "$WORK/e.txt" ]; then
+  report 0 "E: control — the session kept working after the denial"
+else
+  report 1 "E: control failed — session did not continue past the denial"
+fi
+
 printf '\nprobe0-permission-mode: %d ok, %d unexpected\n' "$pass" "$fail"
 printf 'Interpretation is in docs/security.md; these lines are the evidence.\n'
 exit 0
