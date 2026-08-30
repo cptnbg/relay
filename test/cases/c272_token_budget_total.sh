@@ -41,6 +41,10 @@ git -C "$PROJ2" -c user.name=mock -c user.email=mock@example.com commit -q -m p 
 export RELAY_MOCK_SCRIPT="work,complete"
 bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ2" "$STATE2" >"$PWD/out2.log" 2>"$PWD/err2.log"
 assert_rc 0 "$?" "c272_zero_means_off"
+# Found live: a run completing in session 1 left tokens_total null, and a
+# resume would have re-initialised the budget counter to zero. Every terminal
+# exit now persists it.
+assert_json "$STATE2/state.json" '.tokens_total' "127350" "c272_completed_run_persists_total"
 assert_no_grep "$STATE2/journal.log" 'budget.tokens-exhausted' "c272_no_false_gate"
 assert_grep "$STATE2/journal.log" 'session.tokens' "c272_accounting_always_on"
 exit 0

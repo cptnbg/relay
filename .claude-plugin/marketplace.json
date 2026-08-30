@@ -11,7 +11,7 @@
       "name": "relay",
       "source": "./plugins/relay",
       "description": "Run a long multi-phase build to completion across automatically chained Claude Code sessions, refreshing context before quality degrades. Sandboxed by default, with a consented full-trust mode for work that needs SSH or the network.",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "author": { "name": "Boris Griggs" },
       "category": "development",
       "homepage": "https://github.com/cptnbg/relay",

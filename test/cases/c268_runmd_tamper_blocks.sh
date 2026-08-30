@@ -19,6 +19,7 @@ bash "$ROOT/plugins/relay/scripts/relay-supervisor.sh" "$PROJ" "$STATE" >"$PWD/o
 assert_rc 20 "$?" "c268_blocked"
 assert_grep "$STATE/journal.log" 'runmd.tampered	n=1' "c268_journaled"
 assert_json "$STATE/state.json" '.reason' "run-md-tampered" "c268_reason"
+assert_json "$STATE/state.json" '.tokens_total' "63675" "c268_tokens_persisted_at_halt"
 assert_grep "$STATE/work/BLOCKED.md" 'protected region changed' "c268_blocked_says_what"
 assert_grep "$STATE/work/BLOCKED.md" 'TAMPERED-MISSION-MARKER' "c268_diff_shows_edit"
 assert_grep "$STATE/work/BLOCKED.md" 'relay:sealed' "c268_sealed"
