@@ -323,6 +323,28 @@ the repository.
   release-asserted constant, and web tools' in-process egress versus the
   sandbox allowlist is unverified. Watch the journal's `session.denials`
   lines to see when a run needs this.
+- **`billing`** (`config.json`, default `api`) — `api` or `subscription`
+  (Pro/Max). Vocabulary, not mechanics: it drives how `/relay-init` frames
+  budgets and what doctor advises, while every gate works in both modes. On a
+  subscription the envelope's `total_cost_usd` is a NOTIONAL API-equivalent
+  your plan covers — still enforced by `--max-budget-usd` as the only
+  mid-session runaway stop the CLI offers, but not money you spend. What you
+  actually allocate there is tokens:
+- **`budget_tokens_total`** (`config.json`, default 0 = off) — the run-level
+  budget in relay's own token metric (input + cache_creation + cache_read +
+  output, summed per session from the envelope). At `/relay-init` on a
+  subscription you answer in PERCENT of your stated window and relay writes
+  the token figure. Exits 29 with `reason: "tokens"`.
+- **`budget_tokens_per_session`** (`config.json`, default 0 = off) — the
+  per-session tripwire. Post-hoc by necessity (no CLI token flag exists): one
+  breach forces a review session, two consecutive breaches exit 29 with
+  `reason: "session-tokens"`. Catches subagent storms that stay under the
+  notional USD cap.
+- **`plan_window_tokens`** (`config.json`, default 0 = unset) — YOUR estimate
+  of your plan's 5-hour-window token allowance, the denominator for every
+  percent relay shows or asks. Relay never ships plan numbers: Anthropic does
+  not publish them, so gauge yours with `/status` in the Claude app or a
+  usage tool (e.g. ccusage) and adjust when it drifts.
 - **`max_wall_secs`** (`config.json`, default 0 = off) — a wall-clock cap for
   the whole launch. Checked before each session spawn, never mid-session, so
   a run can overshoot by at most about one session timeout; exits 23 with
@@ -358,7 +380,7 @@ the repository.
 | 25 | another supervisor holds this project |
 | 27 | repeated false completion claims |
 | 28 | relay could not create or write its own state directory |
-| 29 | your total budget is spent, **or** the provider's usage limit outlasted relay's retries |
+| 29 | a budget is spent — USD, run tokens, or per-session tokens twice running — **or** the provider's usage limit outlasted relay's retries |
 | 78 | preflight failed — relay never started |
 
 Those last two are one exit code with two opposite remedies: `state.json`'s

@@ -22,7 +22,7 @@ is the statement of record, in the library header every other script sources:
   hash.
 - **jq** — checked by `relay-doctor.sh:98` (`check_tool jq 1.6 'jq --version'`).
   Used throughout for config (`cfg()`, `relay-supervisor.sh:86-89`) and for
-  the acceptance-command argv validation (`relay-supervisor.sh:232-240`).
+  the acceptance-command argv validation (`relay-supervisor.sh:238-246`).
 - **claude** (Claude Code CLI) — checked by `relay-doctor.sh:100-113`, which
   gives the version probe its own 10-second timeout rather than a minimum
   version string; a broken install or a hung auth refresh must not stall an
@@ -91,7 +91,7 @@ The excluded set and the specific fact behind each:
   (`no-deps.sh:29`) because plain `readlink` (no `-f`) is fine and is what
   `relay-doctor.sh:74` actually calls.
 - **`stat`** — its flags differ between macOS (BSD) and Linux (GNU)
-  (`no-deps.sh:27`). `relay-doctor.sh:397-400` reads a credential file's
+  (`no-deps.sh:27`). `relay-doctor.sh:409-412` reads a credential file's
   permission bits with `ls -l | cut -c1-10` instead, calling `ls` "portable
   enough for a permission check." `relay_prune_sessions()`'s header makes
   the same point about `find -mtime` versus `stat` (`relay-lib.sh:551-553`).
@@ -135,7 +135,7 @@ macOS ships `bash` 3.2.57 and relay treats that as the floor
 are bash-2-era syntax, not a bash-4-ism — but this codebase does not use
 them anywhere in `plugins/`, and the one place an argv list has to be built
 dynamically shows why: `verify_complete()`'s acceptance-command runner
-(`relay-supervisor.sh:941-972`) builds its argument list with `set --`
+(`relay-supervisor.sh:963-994`) builds its argument list with `set --`
 against the positional parameters, not a bash array:
 
 ```

@@ -6,6 +6,53 @@ recorded user consent.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-30
+
+Subscription-aware budgeting. relay's budgets were API-shaped — dollars in the
+interview, dollars in the caps — while a Pro/Max operator does not spend
+dollars: they spend a share of a usage window, and the envelope's
+`total_cost_usd` is a notional API-equivalent their plan covers. This release
+lets the operator budget in the units they actually spend, without relay ever
+fabricating plan limits Anthropic does not publish. **No commitment relaxed,
+consent notice unchanged, enforced payload untouched.**
+
+### Added
+- **`billing`** (config, `api` default | `subscription`): vocabulary, never
+  mechanics — it drives how `/relay-init` frames budget questions and what
+  doctor advises; every gate works in both modes. Journal `billing.mode`.
+- **Token accounting, always on**: each session's envelope usage (input +
+  cache_creation + cache_read + output — relay's own documented metric) is
+  journaled as `session.tokens` and accumulated as `tokens_total` in
+  state.json.
+- **`budget_tokens_total`** (0 = off): the run-level budget in tokens — the
+  twin of `budget_usd_total`. Pre-spawn gate; exit 29 with
+  `reason: "tokens"`.
+- **`budget_tokens_per_session`** (0 = off): the per-session tripwire.
+  Post-hoc by necessity — `--max-budget-usd` is the only mid-session stop
+  the CLI offers — so it bounds the NEXT sessions: one breach forces a
+  review, a clean session resets the streak, two consecutive breaches exit
+  29 with `reason: "session-tokens"`. The streak is per launch, like
+  LIMIT_RETRIES: resuming is the operator's decision to continue.
+- **`plan_window_tokens`** (0 = unset): the operator's OWN estimate of their
+  plan window, the denominator for every percent relay shows or asks. The
+  interview points at `/status` or a usage tool to gauge it and never
+  supplies a number itself — a fabricated denominator is worse than none.
+- The review digest always shows `tokens:` (with budget and percent-of-window
+  when configured); `/relay-status` reports `tokens_total` and presents
+  `cost_total` as notional under subscription billing.
+- Doctor advises a subscription project with no token budget that its only
+  run-level rail is the notional USD cap.
+- Mock: `RELAY_MOCK_USAGE_IN` (per-invocation input_tokens override) for
+  token-budget tests. New cases c272-c274.
+
+### Changed
+- The interview asks `billing` first; on `subscription` it asks for percent
+  allocations of the stated window and writes the token figures, and reframes
+  the USD caps honestly as notional runaway guards (suggesting ≥5.00 per
+  session so the guard trips on runaways, not normal work).
+- `docs/exit-codes.md` EX_BUDGET now documents four causes split by
+  status+reason.
+
 ## [1.1.0] - 2026-08-30
 
 Long-run autonomy: zero permission friction in full-trust mode, a run that

@@ -153,6 +153,9 @@ REVIEW_EVERY=$(cfg review_every 5)
 ON_LIMIT=$(cfg on_limit wait)
 MAX_LIMIT_RETRIES=$(cfg max_usage_retries 20)
 MAX_WALL_SECS=$(cfg max_wall_secs 0)
+BUDGET_TOKENS_TOTAL=$(cfg budget_tokens_total 0)
+BUDGET_TOKENS_SESSION=$(cfg budget_tokens_per_session 0)
+PLAN_WINDOW_TOKENS=$(cfg plan_window_tokens 0)
 PLAN_PATH=$(cfg plan_path "$PROJECT/plan.md")
 
 # config.json is written by an LLM and lives in a directory the agent can no
@@ -169,7 +172,10 @@ for _nv in "max_sessions=$MAX_SESSIONS" "session_timeout_secs=$SESSION_TIMEOUT" 
            "stall_limit=$STALL_LIMIT" "fastfail_limit=$FASTFAIL_LIMIT" \
            "min_session_secs=$MIN_SESSION_SECS" "max_fable_sessions=$MAX_FABLE" \
            "max_timeouts=$MAX_TIMEOUTS" "review_every=$REVIEW_EVERY" \
-           "max_usage_retries=$MAX_LIMIT_RETRIES" "max_wall_secs=$MAX_WALL_SECS"; do
+           "max_usage_retries=$MAX_LIMIT_RETRIES" "max_wall_secs=$MAX_WALL_SECS" \
+           "budget_tokens_total=$BUDGET_TOKENS_TOTAL" \
+           "budget_tokens_per_session=$BUDGET_TOKENS_SESSION" \
+           "plan_window_tokens=$PLAN_WINDOW_TOKENS"; do
   case "${_nv#*=}" in ''|*[!0-9]*) _relay_bad_num="$_relay_bad_num ${_nv%%=*}" ;; esac
 done
 for _fv in "budget_usd_per_session=$BUDGET_PER_SESSION" "budget_usd_total=$BUDGET_TOTAL"; do
@@ -542,6 +548,22 @@ if [ -n "$ALLOW_TOOLS_EXTRA" ]; then
   unset _relay_tcount _relay_old_ifs _tn
   relay_journal "permissions.extra-tools" "$ALLOW_TOOLS_EXTRA mode=$SANDBOX_MODE"
 fi
+
+# billing selects the VOCABULARY of the interview and doctor's advice, never
+# the mechanics: the token gates below run whenever their budgets are set,
+# in either billing mode, because the envelope reports usage either way. On a
+# subscription the envelope's total_cost_usd is NOTIONAL — plan-covered, but
+# still the only number --max-budget-usd can hard-stop a session against, so
+# the USD caps stay meaningful there as runaway guards.
+BILLING=$(cfg billing api)
+case "$BILLING" in
+  api|subscription) : ;;
+  *)
+    relay_journal "config.billing-invalid" "$(printf '%s' "$BILLING" | head -c 80)"
+    printf 'relay: billing must be api or subscription, got: %s\n' "$BILLING" >&2
+    exit "$EX_PREFLIGHT" ;;
+esac
+[ "$BILLING" = "subscription" ] && relay_journal "billing.mode" "subscription"
 
 # Re-recorded now that it is validated. The raw configured value went in at the
 # top (see the state block); this makes state.json agree with what the payload
@@ -1056,8 +1078,14 @@ EOF
       "$_n" "$(( _n - _dg_lrev ))" "$_dg_delta"
     printf '  stalls: %s/%s   fastfails: %s/%s   timeouts: %s/%s   complete rejections: %s\n' \
       "$STALL" "$STALL_LIMIT" "$FASTFAIL" "$FASTFAIL_LIMIT" "$TIMEOUTS" "$MAX_TIMEOUTS" "$_dg_rej"
-    printf '  fable sessions used: %s/%s   cost: $%s of $%s\n' \
+    printf '  fable sessions used: %s/%s   cost: $%s of $%s (notional on a subscription)\n' \
       "$FABLE_USED" "$MAX_FABLE" "$COST_TOTAL" "$BUDGET_TOTAL"
+    _dg_tl="  tokens: $TOKENS_TOTAL"
+    [ "$BUDGET_TOKENS_TOTAL" -gt 0 ] && _dg_tl="$_dg_tl of $BUDGET_TOKENS_TOTAL budget"
+    [ "$PLAN_WINDOW_TOKENS" -gt 0 ] && \
+      _dg_tl="$_dg_tl ($(( TOKENS_TOTAL * 100 / PLAN_WINDOW_TOKENS ))% of the stated plan window)"
+    printf '%s\n' "$_dg_tl"
+    unset _dg_tl
     printf '  phase gates passed: %s   plan step (last handoff): %s\n' \
       "$_dg_gates" "$_dg_step"
     printf '</run-digest>\n'
@@ -1335,6 +1363,9 @@ DENIALS_NOTIFIED=0
 FORCE_REVIEW=0
 TIMEOUTS=$(state_get timeouts); [ -n "$TIMEOUTS" ] || TIMEOUTS=0
 COST_TOTAL=$(state_get cost_total); [ -n "$COST_TOTAL" ] || COST_TOTAL=0
+TOKENS_TOTAL=$(state_get tokens_total)
+case "$TOKENS_TOTAL" in ''|*[!0-9]*) TOKENS_TOTAL=0 ;; esac
+TOKEN_BREACH_STREAK=0
 NEXT_MODE=$(state_get next_mode); [ -n "$NEXT_MODE" ] || NEXT_MODE=normal
 NEXT_TIER=$(state_get next_tier); [ -n "$NEXT_TIER" ] || NEXT_TIER="$TIER_DEFAULT"
 
@@ -1385,6 +1416,14 @@ while :; do
     relay_journal "budget.exhausted" "$COST_TOTAL >= $BUDGET_TOTAL"
     relay_notify "relay: budget reached" "spent \$$COST_TOTAL"
     state_set status "budget"; relay_unlock; exit "$EX_BUDGET"
+  fi
+  # The token twin of the gate above — the run-level budget a subscription
+  # operator actually means. Same exit code, split by reason, like every
+  # other multi-cause code here.
+  if [ "$BUDGET_TOKENS_TOTAL" -gt 0 ] && [ "$TOKENS_TOTAL" -ge "$BUDGET_TOKENS_TOTAL" ]; then
+    relay_journal "budget.tokens-exhausted" "$TOKENS_TOTAL >= $BUDGET_TOKENS_TOTAL"
+    relay_notify "relay: token budget reached" "used $TOKENS_TOTAL tokens"
+    state_set status "budget" reason "tokens"; relay_unlock; exit "$EX_BUDGET"
   fi
 
   PREV_HEAD=$( cd "$PROJECT" && relay_git rev-parse HEAD 2>/dev/null )
@@ -1536,6 +1575,42 @@ while :; do
   _cost=$(jq -r '.total_cost_usd // 0' < "$SLOG" 2>/dev/null)
   case "$_cost" in ''|*[!0-9.]*) _cost=0 ;; esac
   COST_TOTAL=$(printf '%s %s\n' "$COST_TOTAL" "$_cost" | awk '{printf "%.4f", $1 + $2}')
+
+  # Token accounting, from the same envelope. The metric is RELAY'S OWN:
+  # input + cache_creation + cache_read + output, exactly as the envelope
+  # reports them — a consistent proxy for plan consumption, not a claim about
+  # Anthropic's internal rate-limit arithmetic (which is unpublished). On a
+  # subscription this is the number the operator actually budgets; on API
+  # billing it is a free extra signal. Percent framing divides by the
+  # OPERATOR-stated plan_window_tokens, so relay never fabricates plan limits.
+  _stok=$(jq -rs "$LIMIT_JQ"' | (.usage // {})
+            | ((.input_tokens // 0) + (.cache_creation_input_tokens // 0)
+               + (.cache_read_input_tokens // 0) + (.output_tokens // 0))' \
+          < "$SLOG" 2>/dev/null)
+  case "$_stok" in ''|*[!0-9]*) _stok=0 ;; esac
+  TOKENS_TOTAL=$(( TOKENS_TOTAL + _stok ))
+  relay_journal "session.tokens" "n=$N used=$_stok total=$TOKENS_TOTAL"
+
+  # Per-session tripwire: post-hoc by necessity (the CLI has no token budget
+  # flag — --max-budget-usd is the only mid-session stop, and it is kept for
+  # exactly that job). The tokens are already spent; what this bounds is the
+  # NEXT sessions: one breach forces an audit, two CONSECUTIVE breaches end
+  # the run. The streak is in-memory, like LIMIT_RETRIES — a resume starts
+  # clean, because resuming IS the operator's decision to continue.
+  if [ "$BUDGET_TOKENS_SESSION" -gt 0 ] && [ "$_stok" -gt "$BUDGET_TOKENS_SESSION" ]; then
+    TOKEN_BREACH_STREAK=$((TOKEN_BREACH_STREAK + 1))
+    relay_journal "session.tokens-over" "n=$N used=$_stok cap=$BUDGET_TOKENS_SESSION streak=$TOKEN_BREACH_STREAK"
+    if [ "$TOKEN_BREACH_STREAK" -ge 2 ]; then
+      relay_notify "relay: token budget" "two consecutive sessions over budget_tokens_per_session"
+      state_set status "budget" reason "session-tokens" tokens_total "$TOKENS_TOTAL" session_count "$N"
+      relay_unlock; exit "$EX_BUDGET"
+    fi
+    relay_notify "relay: token budget" "session $N used $_stok tokens (cap $BUDGET_TOKENS_SESSION); forcing a review"
+    FORCE_REVIEW=1
+  else
+    TOKEN_BREACH_STREAK=0
+  fi
+  unset _stok
 
   # ---- post-exit predicates, in order ----
 
@@ -1887,6 +1962,7 @@ while :; do
 
   _ht=$(grep -c '^- \[ \]' "$WORK/HUMAN-TASKS.md" 2>/dev/null | tr -d ' ')
   state_set session_count "$N" stall_count "$STALL" fastfail_streak "$FASTFAIL" \
+            tokens_total "$TOKENS_TOTAL" \
             fable_used "$FABLE_USED" next_mode "$NEXT_MODE" next_tier "$NEXT_TIER" \
             cost_total "$COST_TOTAL" human_tasks "${_ht:-0}" last_session_rc "$RC" \
             timeouts "$TIMEOUTS"
