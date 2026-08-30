@@ -6,6 +6,29 @@ recorded user consent.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-08-30
+
+One bug, found by running 1.2.0 live within hours of releasing it.
+
+### Fixed
+- **`tokens_total` was not persisted at terminal exits.** The loop-bottom
+  `state_set` was the only writer, so a run that completed (or halted BLOCKED,
+  stopped, stalled, timed out, or fast-failed) in a way that bypassed the loop
+  bottom recorded no token total — observed live as `tokens_total: null` on a
+  run that completed in session 1 while its journal said
+  `session.tokens n=1 used=509620`. Worse than cosmetic: a `/relay-resume`
+  re-initialises the in-memory counter from state.json, so a resumed run would
+  have restarted the `budget_tokens_total` accounting from zero and
+  undercounted the budget. All ten terminal `state_set` sites now persist
+  `tokens_total`. Regression asserts in c272 (completed run) and c268 (halted
+  run).
+
+Also worth recording from the same live run: a real session measured 509,620
+tokens by relay's metric — cache reads dominate — where the mock's synthetic
+envelope is 63,675. Size `budget_tokens_total` and `plan_window_tokens`
+against real journal `session.tokens` lines, not against intuitions formed on
+toy numbers.
+
 ## [1.2.0] - 2026-08-30
 
 Subscription-aware budgeting. relay's budgets were API-shaped — dollars in the

@@ -1637,7 +1637,7 @@ while :; do
       printf 'run /relay-resume.\n\n<!-- relay:sealed -->\n'
     } > "$WORK/BLOCKED.md" 2>/dev/null
     relay_notify "relay: blocked" "a session modified RUN.md's protected region"
-    state_set status "blocked" reason "run-md-tampered"
+    state_set status "blocked" reason "run-md-tampered" tokens_total "$TOKENS_TOTAL"
     relay_unlock; exit "$EX_BLOCKED"
   fi
   unset _rmh
@@ -1646,7 +1646,7 @@ while :; do
     if verify_complete; then
       relay_journal "complete.verified" "n=$N"
       relay_notify "relay: complete" "run finished after $N sessions"
-      state_set status "complete" session_count "$N" cost_total "$COST_TOTAL"
+      state_set status "complete" session_count "$N" cost_total "$COST_TOTAL" tokens_total "$TOKENS_TOTAL"
       relay_unlock; exit "$EX_OK"
     fi
     # A COMPLETE claim that does not survive verification is deleted so the
@@ -1657,7 +1657,7 @@ while :; do
     _rej=$((_rej + 1)); state_set complete_rejections "$_rej"
     if [ "$_rej" -ge 3 ]; then
       relay_notify "relay: blocked" "COMPLETE rejected $_rej times"
-      state_set status "blocked" reason "repeated-false-complete"
+      state_set status "blocked" reason "repeated-false-complete" tokens_total "$TOKENS_TOTAL"
       relay_unlock; exit "$EX_REJECTED"
     fi
     NEXT_TIER=fable   # it thinks it is done and it is not: escalate judgment
@@ -1666,13 +1666,13 @@ while :; do
   if sealed "$WORK/BLOCKED.md"; then
     relay_journal "blocked.detected" "n=$N"
     relay_notify "relay: blocked" "$(head -c 120 "$WORK/BLOCKED.md" 2>/dev/null | tr '\n' ' ')"
-    state_set status "blocked" session_count "$N" cost_total "$COST_TOTAL"
+    state_set status "blocked" session_count "$N" cost_total "$COST_TOTAL" tokens_total "$TOKENS_TOTAL"
     relay_unlock; exit "$EX_BLOCKED"
   fi
 
   if [ -f "$STATE/STOP" ]; then
     relay_journal "stop.requested" "n=$N"
-    state_set status "stopped" session_count "$N"; relay_unlock; exit "$EX_STOPPED"
+    state_set status "stopped" session_count "$N" tokens_total "$TOKENS_TOTAL"; relay_unlock; exit "$EX_STOPPED"
   fi
 
   # Usage limits are not failures: they are weather. They must not consume the
@@ -1740,7 +1740,7 @@ while :; do
       printf '\nThen: /relay-resume\n\n<!-- relay:sealed -->\n'
     } > "$WORK/BLOCKED.md" 2>/dev/null
     relay_notify "relay: blocked" "handoff asserted a relaxed guardrail"
-    state_set status "blocked" reason "guardrail-drift"
+    state_set status "blocked" reason "guardrail-drift" tokens_total "$TOKENS_TOTAL"
     relay_unlock; exit "$EX_BLOCKED"
   fi
 
@@ -1849,7 +1849,7 @@ while :; do
   if [ "$_commit_rc" -eq 1 ]; then
     relay_journal "commit.secret-blocked" "n=$N"
     relay_notify "relay: blocked" "possible credential in staged changes"
-    state_set status "blocked" reason "secret-detected"
+    state_set status "blocked" reason "secret-detected" tokens_total "$TOKENS_TOTAL"
     relay_unlock; exit "$EX_BLOCKED"
   elif [ "$_commit_rc" -eq 2 ]; then
     relay_journal "commit.failed" "n=$N rc=2 (unmerged/add/commit failed; work left uncommitted)"
@@ -1898,7 +1898,7 @@ while :; do
     if [ "$TIMEOUTS" -ge "$MAX_TIMEOUTS" ]; then
       relay_journal "timeout.tripped" "$TIMEOUTS consecutive timeouts"
       relay_notify "relay: timing out" "$TIMEOUTS sessions hit the wall clock"
-      state_set status "timeout" session_count "$N"
+      state_set status "timeout" session_count "$N" tokens_total "$TOKENS_TOTAL"
       relay_unlock; exit "$EX_TIMEOUT"
     fi
   else
@@ -1934,12 +1934,12 @@ while :; do
   if [ "$STALL" -ge "$STALL_LIMIT" ]; then
     relay_journal "stall.detected" "$STALL sessions with no progress"
     relay_notify "relay: stalled" "no progress across $STALL sessions"
-    state_set status "stalled" session_count "$N"; relay_unlock; exit "$EX_STALLED"
+    state_set status "stalled" session_count "$N" tokens_total "$TOKENS_TOTAL"; relay_unlock; exit "$EX_STALLED"
   fi
   if [ "$FASTFAIL" -ge "$FASTFAIL_LIMIT" ]; then
     relay_journal "fastfail.tripped" "$FASTFAIL consecutive short sessions"
     relay_notify "relay: circuit breaker" "$FASTFAIL sessions exited immediately"
-    state_set status "blocked" reason "fastfail"; relay_unlock; exit "$EX_FASTFAIL"
+    state_set status "blocked" reason "fastfail" tokens_total "$TOKENS_TOTAL"; relay_unlock; exit "$EX_FASTFAIL"
   fi
 
   # De-escalate: one hard step must not pin the whole run to the costly tier.
