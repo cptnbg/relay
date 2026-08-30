@@ -385,6 +385,18 @@ else
     unset _mt _bps
   fi
 
+  # A subscription project whose only run-level rail is the notional USD cap
+  # is budgeting in units nobody chose: the operator thinks in share-of-plan,
+  # and the dollars the envelope reports are API-equivalents their plan
+  # already covers. Advice, not a failure — the USD caps still work as
+  # runaway guards there.
+  if [ "$(jq -r '.billing // "api"' "$STATE/config.json" 2>/dev/null)" = "subscription" ] \
+     && [ "$(jq -r '.budget_tokens_total // 0' "$STATE/config.json" 2>/dev/null)" = "0" ]; then
+    warn "billing is subscription but budget_tokens_total is unset: the only run-level rail is the NOTIONAL USD cap"
+    fixit "set budget_tokens_total (or re-run /relay-init and answer the percent"
+    fixit "question) so the run budget is in the units your plan actually spends"
+  fi
+
   # Not a failure: relay still verifies COMPLETE via sealed sentinel, clean
   # tree and new commits. But with no acceptance command there is nothing
   # EXECUTABLE standing between "the model says it is done" and EX_OK.

@@ -136,7 +136,28 @@ knowing what the plan actually demands.
 - external gates (DNS, payments, third-party approval)
 - anything the plan explicitly defers "to the owner"
 
-**3. Ask, in batches, with `AskUserQuestion`.** First ask the run profile —
+**3. Ask, in batches, with `AskUserQuestion`.** Before anything else, ask how
+this account is billed — `api` (pay per token) or `subscription` (Pro/Max) —
+and record it as `billing`. It changes the VOCABULARY of every budget question,
+never the mechanics:
+
+- `api`: budgets are dollars, exactly as below.
+- `subscription`: the operator does not spend dollars; they spend a share of
+  a usage window. Ask for their 5-hour-window token estimate
+  (`plan_window_tokens`) — point them at `/status` in the Claude app or a
+  usage tool such as ccusage to gauge it, and NEVER supply a number yourself:
+  Anthropic does not publish per-plan limits and a fabricated denominator is
+  worse than none. Then ask what PERCENT of that window this whole run may
+  consume, and what percent one session may consume, and write the token
+  figures they imply: `budget_tokens_total = window × run% / 100` and
+  `budget_tokens_per_session = window × session% / 100`. Say the resulting
+  token numbers out loud. The dollar caps below still get asked, reframed
+  honestly: on a subscription they are NOTIONAL API-equivalents the plan
+  covers, kept because `--max-budget-usd` is the only mid-session hard stop
+  the CLI offers — a runaway-session guard, not spend. Suggest 5.00 or
+  higher per session so the guard trips on runaways, not on normal work.
+
+Then ask the run profile —
 `standard` (default) or `long-haul` (a plan expected to need tens of sessions
 or more than ~6 hours). For `long-haul`, SUGGEST — never silently apply —
 `max_sessions` 50-100, `session_timeout_secs` 7200, `stall_limit` 4,
@@ -396,6 +417,9 @@ fi
 Then report:
 - `$STATE/state.json`: status, session count, tier, stall/fastfail counters, cost,
   and `sandbox_mode`
+- `tokens_total` from state.json — and when `plan_window_tokens` is set,
+  say it as a percentage of the stated window; on `billing: subscription`,
+  present `cost_total` as notional (plan-covered), never as money spent
 - `denials_total` and `last_denial_tools` from state.json, plus any
   `session.denials` journal lines — repeated denials mean the run is fighting
   a deny rule or a user-scope hook, not failing; doctor's user-hooks warning
@@ -475,8 +499,13 @@ stopping it** — the main reason relay is steerable from a phone.
      immediately. If `reason` is `wall-clock`, relaunching alone grants a
      fresh window (the clock is per launch, never persisted); raise or zero
      `max_wall_secs` only if the cap itself was wrong.
-   - exit 29 (`EX_BUDGET`): raise `budget_usd_total` above the recorded
-     `cost_total`, same reason.
+   - exit 29 (`EX_BUDGET`): three causes, split by `reason`. Empty reason
+     with status `budget`: raise `budget_usd_total` above the recorded
+     `cost_total`. Reason `tokens`: raise `budget_tokens_total` above the
+     recorded `tokens_total`. Reason `session-tokens`: two consecutive
+     sessions blew `budget_tokens_per_session` — read their
+     `session.tokens-over` journal lines before resuming (the streak itself
+     resets on relaunch; resuming IS the decision to continue).
    - exit 21 (`EX_STALLED`) / 26 (`EX_FASTFAIL`): the streaks persist too; the
      relaunch gets one more session, and only a *productive* one resets them.
      Fix whatever starved progress (see the journal) before spending it.

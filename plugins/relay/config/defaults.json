@@ -12,6 +12,10 @@
 
   "budget_usd_per_session": 2.00,
   "budget_usd_total": 20.00,
+  "billing": "api",
+  "budget_tokens_per_session": 0,
+  "budget_tokens_total": 0,
+  "plan_window_tokens": 0,
 
   "model_tier": "opus",
   "window_opus": 200000,

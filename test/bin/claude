@@ -755,6 +755,22 @@ if [ "$rc" -eq 0 ] || [ -n "$terminal_reason" ] || [ -n "$api_error_status" ] \
    || [ "$force_envelope" -eq 1 ]; then
   if [ "$output_format" = "json" ]; then
     _mock_model="${model:-mock-model}"
+    # Per-invocation input_tokens override for token-budget tests: CSV,
+    # Nth-entry-else-last like RELAY_MOCK_SCRIPT. Default keeps the historic
+    # constant so every existing envelope stays byte-identical.
+    _mu_in=52411
+    if [ -n "${RELAY_MOCK_USAGE_IN:-}" ]; then
+      _mu_i=0
+      _mu_old_ifs="$IFS"; IFS=','
+      for _mu_e in $RELAY_MOCK_USAGE_IN; do
+        _mu_i=$((_mu_i + 1))
+        _mu_in="$_mu_e"
+        [ "$_mu_i" -eq "$n" ] && break
+      done
+      IFS="$_mu_old_ifs"
+      unset _mu_i _mu_e _mu_old_ifs
+      case "$_mu_in" in ''|*[!0-9]*) _mu_in=52411 ;; esac
+    fi
     # Denials are CLI-authored envelope data. RELAY_MOCK_DENIALS is a CSV of
     # tool names; default empty emits the identical [] every test always saw.
     _pd_json=$(jq -nc --arg csv "${RELAY_MOCK_DENIALS:-}" \
@@ -771,9 +787,10 @@ if [ "$rc" -eq 0 ] || [ -n "$terminal_reason" ] || [ -n "$api_error_status" ] \
       --arg mdl "$_mock_model" \
       --argjson n "$n" \
       --argjson pd "$_pd_json" \
+      --argjson muin "$_mu_in" \
       '{type:"result", subtype:$subtype, is_error:$is_error, result:$result,
         session_id:$sid, num_turns:$n, total_cost_usd:0.01,
-        usage:{input_tokens:52411, cache_creation_input_tokens:2048,
+        usage:{input_tokens:($muin), cache_creation_input_tokens:2048,
                cache_read_input_tokens:8192, output_tokens:1024,
                server_tool_use:{web_search_requests:0}},
         modelUsage:{($mdl):{inputTokens:52411, outputTokens:1024,

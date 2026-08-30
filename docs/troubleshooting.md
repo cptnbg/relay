@@ -14,20 +14,20 @@ right first move, because nothing ran. Fix the reported cause first. The
 order these run in is `docs/architecture.md` §1a.
 
 - **A configured context window is too small.** Every `window_<tier>` must
-  clear 100,000 tokens (`RELAY_MIN_WINDOW`, `relay-supervisor.sh:396`);
-  below that, `relay-supervisor.sh:397-408` refuses to start rather than
+  clear 100,000 tokens (`RELAY_MIN_WINDOW`, `relay-supervisor.sh:402`);
+  below that, `relay-supervisor.sh:403-414` refuses to start rather than
   run a session that reports "critical" context pressure on tool call one,
   forever.
 - **`exec.json`'s `acceptance_cmd` is not a plain argv array.** Relay
   requires a JSON array of 1-32 non-empty strings, each ≤512 characters —
-  never a shell string (`relay-supervisor.sh:232-240`). Use `/relay-approve`
+  never a shell string (`relay-supervisor.sh:238-246`). Use `/relay-approve`
   to set it correctly — approving also records the `exec_hash` without which
-  the supervisor refuses at preflight (`relay-supervisor.sh:248-254`).
+  the supervisor refuses at preflight (`relay-supervisor.sh:254-260`).
 - **`relay-doctor.sh` failed a hard check.** The supervisor runs it as a
   subprocess first and treats any non-zero exit as cause to refuse
-  (`relay-supervisor.sh:430-434`). Run it directly for the full report:
+  (`relay-supervisor.sh:436-440`). Run it directly for the full report:
   `bash plugins/relay/scripts/relay-doctor.sh <project> <state>`, or
-  `/relay-doctor` (`SKILL.md:461-473`). It prints `FAIL`/`fix:` lines and
+  `/relay-doctor` (`SKILL.md:485-497`). It prints `FAIL`/`fix:` lines and
   applies none of them: it modifies nothing *outside relay's own state
   directory* (`relay-doctor.sh:11-13`). Inside it, doctor does write — it
   creates `$STATE` and round-trips a `.doctor-probe.$$` file it then
@@ -39,19 +39,19 @@ order these run in is `docs/architecture.md` §1a.
 More refusals, all fail-closed, all listed with line numbers in
 `docs/exit-codes.md`'s EX_PREFLIGHT table: a window that clears the 100,000
 floor can still be refused once a project has a measured baseline, if it
-leaves too little room above it (`relay-supervisor.sh:436-456` — see "Every
+leaves too little room above it (`relay-supervisor.sh:442-462` — see "Every
 session hands off immediately"); a malformed `allow_domains` in `config.json`
-is rejected as a hostname list (`relay-supervisor.sh:473-482`); a non-numeric
+is rejected as a hostname list (`relay-supervisor.sh:479-488`); a non-numeric
 value in any numeric config key refuses rather than silently disabling a cap
-(`relay-supervisor.sh:167-185`); a `plan_path` that does not resolve to an
-existing file refuses (`relay-supervisor.sh:297-322`); a `model_tier` outside
-`opus|sonnet|fable` refuses (`relay-supervisor.sh:369-376`); missing or stale
+(`relay-supervisor.sh:170-191`); a `plan_path` that does not resolve to an
+existing file refuses (`relay-supervisor.sh:303-328`); a `model_tier` outside
+`opus|sonnet|fable` refuses (`relay-supervisor.sh:375-382`); missing or stale
 consent (`consent.notice_hash`) fails doctor's hard check
 (`relay-doctor.sh:338-371`); and the injection / guardrail-drift filters are
 self-tested against the live `grep` at startup — if either cannot be shown to
 fire (ugrep rejects complex patterns with exit 2 and no output), relay
 refuses rather than run with a silently disabled defence
-(`relay-supervisor.sh:801-824`).
+(`relay-supervisor.sh:823-846`).
 
 ## The sandbox probe failed
 
@@ -66,7 +66,7 @@ start if the canary's value appears in `$_readproof`, the session's JSON
 output, or stderr (`relay-settings.sh:630-634`), if the session did not
 complete cleanly — `.is_error == false` (`:577-580`) — or if the host
 answered (`:582-590`). Any of those refuses the run
-(`relay-supervisor.sh:590-595`, exit 78, `reason "sandbox-not-enforced"`).
+(`relay-supervisor.sh:612-617`, exit 78, `reason "sandbox-not-enforced"`).
 
 Be precise about what the egress half proves.
 `relay_settings_egress_verdict()` (`relay-settings.sh:468-536`) reads
@@ -86,7 +86,7 @@ What to run next: read `$STATE/work/probe/probe-read.json` and
 cached by a fingerprint of the settings payload plus `claude --version`
 (`relay-settings.sh:767-771`, stored supervisor-side at
 `$STATE/run/probe.ok`); the fingerprint itself must be a real 40-hex blob id
-or relay refuses outright (`relay-supervisor.sh:574-582`) — an empty one used
+or relay refuses outright (`relay-supervisor.sh:596-604`) — an empty one used
 to read as a cache hit and skip the proof. A CLI upgrade forces a
 fresh proof automatically. A probe that keeps failing after that is a real
 sandbox regression in this CLI build, not something to retry past.
@@ -176,15 +176,15 @@ land the session once that crosses the soft threshold, 60% by default
 (`relay-ctx.sh:128`, `SOFT`). A session does not start from zero — system
 prompt, tool definitions, and `CLAUDE.md` are already loaded before the
 first tool call: 48,070 tokens on one project, ~69,000 on another
-(`relay-supervisor.sh:385-392, 436-441`). A small window relative to that
+(`relay-supervisor.sh:391-398, 442-447`). A small window relative to that
 baseline reaches 60% almost immediately, so every session hands off having
 done almost nothing.
 
 Relay guards the worst case automatically: any `window_<tier>` under the
-100,000-token floor is refused at startup (`relay-supervisor.sh:396-408`,
+100,000-token floor is refused at startup (`relay-supervisor.sh:402-414`,
 see "It refuses to start"), and once a project has a measured baseline, a
 second gate refuses a window that does not clear `baseline * 2.5`
-(`relay-supervisor.sh:436-456`).
+(`relay-supervisor.sh:442-462`).
 
 What to run: compare `state.json`'s `ctx_baseline` against `window_<tier>`
 in `config.json`, and check `run/ctx.log` for actual `pct=`/`used=` values
@@ -205,7 +205,7 @@ budget_exhausted` (`test/cases/c107_budget_cap_is_not_a_usage_limit.sh:4-
 
 What to read: the journal's `session.reason` line for that session
 number, extracted from the session's JSON envelope, never from `$RC`
-(`relay-supervisor.sh:1385-1393`). `rc=1` alone tells you nothing;
+(`relay-supervisor.sh:1416-1432`). `rc=1` alone tells you nothing;
 `session.reason n=<N> ... budget_exhausted` tells you `budget_usd_per_
 session` did its job, not that anything failed. A genuine crash instead
 shows up as an unproductive session advancing `stall_count` or
@@ -220,24 +220,24 @@ unless total budget is also exhausted (`EX_BUDGET`, `docs/exit-codes.md`).
 ## It says BLOCKED and I do not know why
 
 Read `$STATE/work/BLOCKED.md` first — every cause writes one, sealed with
-`<!-- relay:sealed -->` (`sealed()`, `relay-supervisor.sh:1211`), before
+`<!-- relay:sealed -->` (`sealed()`, `relay-supervisor.sh:1239`), before
 exiting 20 (`EX_BLOCKED`). `docs/exit-codes.md`'s EX_BLOCKED section lists
 all five causes; the one worth understanding on its own is guardrail drift,
 because it is the one relay writes about the *previous session's own words*.
 
-`handoff_guardrail_drift()` (`relay-supervisor.sh:683-687`) scans the
+`handoff_guardrail_drift()` (`relay-supervisor.sh:705-709`) scans the
 handoff's `done`/`next`/`open_questions` arrays with two AND-ed patterns on
 the same line — a permission word (`GUARDRAIL_PERM_RE`: `allow`, `approved`,
 `ok`, …) and a danger word (`GUARDRAIL_DANGER_RE`: force-push, `sudo`,
-skipping tests, disabling the sandbox; `relay-supervisor.sh:677-678`).
+skipping tests, disabling the sandbox; `relay-supervisor.sh:699-700`).
 Two simple patterns rather than one big regex, because the old single
 pattern exceeded ugrep's complexity limits and silently never fired — and a
 startup self-test now refuses to run at all if the filters cannot be shown
-to fire under the live `grep` (`relay-supervisor.sh:695-720`). On a
+to fire under the live `grep` (`relay-supervisor.sh:717-742`). On a
 match, the supervisor writes `work/BLOCKED.md` itself
-(`relay-supervisor.sh:1659-1666`) and halts *before* the handoff is archived
+(`relay-supervisor.sh:1734-1741`) and halts *before* the handoff is archived
 and *before* anything from the session is committed
-(`relay-supervisor.sh:1655-1656`) — ahead of every other content-based
+(`relay-supervisor.sh:1730-1731`) — ahead of every other content-based
 check, because a handoff claiming a relaxed guardrail is the highest-value
 thing an injection could write.
 
@@ -281,7 +281,7 @@ Three places to look, in order of how often they update:
 - **`$STATE/journal.log`** — tab-separated `epoch  event  detail` per
   event (`relay_journal`, `lib/relay-lib.sh:43-50`); `tail -f
   $STATE/journal.log` is the documented way to watch a run
-  (`SKILL.md:353`). Not growing at all? Check `$STATE/supervisor.out` and
+  (`SKILL.md:374`). Not growing at all? Check `$STATE/supervisor.out` and
   whether the process is still alive.
 - **`$STATE/sessions/<NNN>-<uuid>.log` and `.log.err`** — the current
   session's output. A working session still has a live `claude -p`
@@ -330,7 +330,7 @@ fix in a separate, non-self-hosted run. State the read-only rule in
 `RUN.md`'s guardrails section, but route each finding to
 `$STATE/work/HUMAN-TASKS.md` — that is where relay's own session prompt
 tells a session to put anything only a human can act on
-(`relay-supervisor.sh:990-991`), and it is the convention this repository's
+(`relay-supervisor.sh:1012-1013`), and it is the convention this repository's
 own plan uses (`docs/phase5-publish-plan.md:132-134`). Appending findings
 to `RUN.md` instead buries them inside the mission text that every later
 session re-reads as instructions. Nothing in relay's preflight or sandbox
@@ -338,17 +338,17 @@ detects "the target repository is the one currently running me."
 
 ## How do I stop a run right now?
 
-`touch "$STATE/STOP"` — what `/relay-stop` does (`SKILL.md:354`) — and
+`touch "$STATE/STOP"` — what `/relay-stop` does (`SKILL.md:375`) — and
 `kill -TERM` on the supervisor both look instant but are not. Neither
 interrupts a session already in flight.
 
 Why: for a session's entire duration the supervisor is blocked in a
 synchronous, foreground subshell around `relay_timeout`
-(`relay-supervisor.sh:1353-1370`) — not backgrounded, so the shell waits on
+(`relay-supervisor.sh:1384-1401`) — not backgrounded, so the shell waits on
 that child directly. `STOP` is checked only between sessions: pre-spawn
-(`relay-supervisor.sh:1365-1368`) and post-exit
-(`relay-supervisor.sh:1598-1601`) — never mid-session. The `INT`/`TERM`/
-`HUP` traps (`relay_install_traps`, `relay-supervisor.sh:425`, defined
+(`relay-supervisor.sh:1396-1399`) and post-exit
+(`relay-supervisor.sh:1673-1676`) — never mid-session. The `INT`/`TERM`/
+`HUP` traps (`relay_install_traps`, `relay-supervisor.sh:431`, defined
 `lib/relay-lib.sh:708-714`, handlers `lib/relay-lib.sh:678-694`, cleanup
 `lib/relay-lib.sh:641-676`) genuinely work, but bash defers running a trap
 until the current foreground command finishes — while blocked in that
@@ -373,16 +373,16 @@ just carries on into another session instead of accepting `COMPLETE.md`.
 
 What it means: `verify_complete()` compares the live commit count against
 `commits_at_start`, captured once when the supervisor starts, from `git
-rev-list --count HEAD` (`relay-supervisor.sh:1279-1287`). Both sides are
+rev-list --count HEAD` (`relay-supervisor.sh:1307-1315`). Both sides are
 normalised to a number before the comparison, and an unreadable count
-becomes `0` (`relay-supervisor.sh:985-988`).
+becomes `0` (`relay-supervisor.sh:1007-1010`).
 
 First check which rule you are under. The commit count is a **hard veto
 only when no acceptance command is configured** (`relay-supervisor.sh:
 753-757`): with one configured, a passing acceptance command accepts the
 COMPLETE even with zero new commits — the case of resuming after the work
 was already finished — and journals `complete.no-new-commits`
-(`relay-supervisor.sh:1221-1228`). That change came from a live run that was
+(`relay-supervisor.sh:1249-1256`). That change came from a live run that was
 rejected three times for `no commits were made (start=8 now=8)` while its
 acceptance command passed the entire time. If you see this symptom *and*
 you have an acceptance command, you are on a build from before that fix.
@@ -419,7 +419,7 @@ What it means: `fastfail_limit` consecutive sessions (default 3) both
 produced nothing and ended in under `min_session_secs` (default 45s,
 `relay-supervisor.sh:147`). Both conditions are required — a session that
 committed or wrote a valid handoff clears the streak however brief it was
-(`relay-supervisor.sh:1660-1661`). So this is a genuine crash loop: sessions
+(`relay-supervisor.sh:1735-1736`). So this is a genuine crash loop: sessions
 are dying before they can do anything, not working quickly.
 
 What to check: read `$STATE/sessions/` for the sessions that tripped it
@@ -441,7 +441,7 @@ What you see: two `relay-supervisor.sh` processes alive for the same
 project, each launching its own `claude -p` sessions against the same
 tree.
 
-What it means: the single-instance lock (`relay-supervisor.sh:419-424`,
+What it means: the single-instance lock (`relay-supervisor.sh:425-430`,
 `relay_lock` in `lib/relay-lib.sh:212-251`) decides whether a lock
 directory is stale inside `_relay_lock_try_break()`
 (`lib/relay-lib.sh:255-342`). On the same host it asks whether the owner
