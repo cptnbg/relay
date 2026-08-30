@@ -150,10 +150,14 @@ NOW=$(date +%s)
 AGE=$(( NOW - LAST_EPOCH ))
 [ "$AGE" -ge 0 ] || AGE=99999   # clock stepped backwards: force a rescan
 
-# Cheap when there is slack, every call once pressure is real.
+# Cheap when there is slack, every call once pressure is real. The bands sit
+# LOWER than they used to (was 40/55): the throttle keys off the STALE
+# LAST_PCT, and a single huge tool result — one big Read, one subagent return
+# — can jump the window far past a threshold inside the dead band. Live
+# evidence: nine calls, one sample.
 INTERVAL=30
-if [ "$LAST_PCT" -ge 40 ]; then INTERVAL=15; fi
-if [ "$LAST_PCT" -ge 55 ]; then INTERVAL=0; fi
+if [ "$LAST_PCT" -ge 30 ]; then INTERVAL=15; fi
+if [ "$LAST_PCT" -ge 50 ]; then INTERVAL=0; fi
 
 relay_save_state() {
   mkdir -p "$RUN_DIR" 2>/dev/null || return 0
@@ -163,7 +167,13 @@ relay_save_state() {
   return 0
 }
 
-if [ "$INTERVAL" -gt 0 ] && [ "$AGE" -lt "$INTERVAL" ]; then
+# The modulo escape bounds staleness in CALLS, not seconds: whatever the
+# clock says, every 8th call rescans, so a single-call context jump is seen
+# within at most seven further calls. A scan is a wc -c plus one 64KB
+# tail+jq (escalating only on multi-MB transcripts) — milliseconds against
+# the 5s hook timeout. RELAY_CTX_RESCAN_EVERY exists for tests only.
+if [ "$INTERVAL" -gt 0 ] && [ "$AGE" -lt "$INTERVAL" ] \
+   && [ $(( CALLS % ${RELAY_CTX_RESCAN_EVERY:-8} )) -ne 0 ]; then
   relay_save_state "$LAST_EPOCH" "$LAST_PCT" "$LAST_LEVEL" "$CALLS"
   exit 0
 fi

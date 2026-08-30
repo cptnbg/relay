@@ -21,6 +21,10 @@ IFS=$' \t\n'
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$SELF_DIR/relay-git.sh"
+# Function definitions only — sourced so the deny-path checks below derive
+# from the REAL lists in relay-settings.sh instead of a copy that drifts.
+# shellcheck source=/dev/null
+. "$SELF_DIR/relay-settings.sh"
 
 PROJECT="${1:-$PWD}"
 STATE="${2:-}"
@@ -199,6 +203,40 @@ else
     warn "symlinks resolve outside the repo:"
     printf '%s\n' "$_esc" | sed 's/^/          /' >&2
   fi
+
+  # A project INSIDE a deny-listed directory is a run that fights its own
+  # permission rules: every Write/Edit tool call into the tree is refused (in
+  # both modes — these are permission rules, not sandbox rules), and in
+  # enforced mode a denyRead parent makes the project unreadable outright.
+  # Warn, not fail: in disabled mode Bash writes still land, so the run
+  # degrades into fallback churn rather than dying — a deliberate if odd
+  # choice stays the user's to make.
+  _dw_dirs=$(relay_settings_default_deny_writes \
+    | sed -n 's/^Write(\(~\/[^)]*\)\/\*\*)$/\1/p' | sed "s|^~|$HOME|")
+  for _dw in $_dw_dirs; do
+    # Canonicalise before comparing: PROJECT_REAL went through `cd && pwd`,
+    # and on macOS $HOME itself can be a symlinked path (/var -> /private/var),
+    # so a lexical match against the raw expansion silently never fires.
+    _dwr=$( cd "$_dw" 2>/dev/null && pwd ); [ -n "$_dwr" ] || _dwr="$_dw"
+    case "$PROJECT_REAL" in
+      "$_dwr"|"$_dwr"/*)
+        warn "project sits under $_dwr, which relay's permission rules deny Write/Edit to"
+        fixit "every Write tool call into this project will be REFUSED in both modes;"
+        fixit "move the project, or expect sessions to burn turns falling back to Bash"
+        ;;
+    esac
+  done
+  _dr_dirs=$(relay_settings_default_denyread)
+  for _dr in $_dr_dirs; do
+    _drr=$( cd "$_dr" 2>/dev/null && pwd ); [ -n "$_drr" ] || _drr="$_dr"
+    case "$PROJECT_REAL" in
+      "$_drr"|"$_drr"/*)
+        warn "project sits under $_drr, which the sandbox denies READS from in enforced mode"
+        fixit "sessions cannot read their own project there; move it, or run full-trust"
+        ;;
+    esac
+  done
+  unset _dw_dirs _dw _dwr _dr_dirs _dr _drr
 fi
 
 # ---------------------------------------------------------------------------
@@ -224,6 +262,43 @@ if [ "$_found_cfg" -eq 1 ]; then
 else
   pass "no repo-supplied Claude configuration"
 fi
+
+# ---------------------------------------------------------------------------
+# 3b. User-scope Claude configuration.
+#
+# --setting-sources user is a security commitment (it is what excludes a
+# hostile repository's config), and it has a flip side relay cannot remove:
+# the USER's own hooks load inside every relay session. A PreToolUse guard
+# that text-matches commands can deny mid-run — observed on a real machine,
+# where a guard blocking any command CONTAINING "git reset --hard" also
+# blocked heredocs that merely wrote those words into documentation. Relay's
+# job here is visibility, not suppression: the journal's session.denials
+# lines say when a run is fighting one.
+# ---------------------------------------------------------------------------
+say "user-scope claude config"
+_usercfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+if [ -f "$_usercfg" ]; then
+  _uh=$(jq -r '(.hooks // {}) | to_entries[]
+        | select(.key == "PreToolUse" or .key == "PostToolUse")
+        | .key as $k | .value[]? | ((.matcher // "*") as $m
+        | .hooks[]? | "\($k) matcher=\($m) cmd=\(.command // "?")")' \
+        "$_usercfg" 2>/dev/null | head -5)
+  if [ -n "$_uh" ]; then
+    while IFS= read -r _uhl; do
+      _uhc="${_uhl##* cmd=}"
+      warn "user-scope hook runs INSIDE relay sessions: ${_uhl%% cmd=*} cmd=${_uhc##*/}"
+    done <<RELAY_UH
+$_uh
+RELAY_UH
+    fixit "--setting-sources user is a security commitment and cannot be dropped;"
+    fixit "a text-matching guard can deny mid-run — watch journal session.denials lines"
+    unset _uhl _uhc
+  else
+    pass "no user-scope PreToolUse/PostToolUse hooks"
+  fi
+  unset _uh
+fi
+unset _usercfg
 
 # ---------------------------------------------------------------------------
 # 4. State directory: writable, outside the repo, atomic-write capable.
@@ -300,6 +375,14 @@ else
   # says it out loud every time rather than leaving it buried in config.json.
   if [ "$(jq -r '.sandbox_mode // "enforced"' "$STATE/config.json" 2>/dev/null)" = "disabled" ]; then
     warn "sandbox_mode is disabled (FULL TRUST): sessions run with NO sandbox — any host, any readable file, including ~/.ssh"
+    _mt=$(jq -r '.model_tier // "opus"' "$STATE/config.json" 2>/dev/null)
+    _bps=$(jq -r '.budget_usd_per_session // 2.00' "$STATE/config.json" 2>/dev/null)
+    if [ "$_mt" = "opus" ] && printf '%s 5\n' "$_bps" | awk '{exit !($1 < $2)}'; then
+      warn "budget_usd_per_session is $_bps with model_tier opus in full-trust mode"
+      fixit "a budget-capped session dies mid-step WITHOUT writing a handoff, and"
+      fixit "each one costs a recovery session; for long runs set it to 5.00 or higher"
+    fi
+    unset _mt _bps
   fi
 
   # Not a failure: relay still verifies COMPLETE via sealed sentinel, clean

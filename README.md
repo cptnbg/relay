@@ -260,6 +260,19 @@ escalate to fable *before* the circuit breaker fires — a smarter model beats a
 halt — then de-escalate once productive, capped so one hard step cannot pin the
 whole run to the expensive tier.
 
+**The run remembers its own arc.** The supervisor keeps a one-line-per-session
+ledger and renders the last 25 lines into every prompt (marked as unverified
+self-reports — commits are the evidence), so session 30 knows how it got there
+without re-deriving the story from git. For large plans, `/relay-init` can
+write a `PLAN-INDEX.md`: sessions then read the step list plus only their
+current step's plan section instead of the whole plan every session, the
+supervisor gains a step vocabulary for mechanical drift detection (a step
+going backward forces an audit session), and optional human-approved **phase
+gates** run real commands at step boundaries — with a failing gate forcing an
+audit once and halting the run the second time. RUN.md's mission, guardrails
+and settled decisions are hash-guarded: a session that edits them halts the
+run for a human.
+
 **Handoffs are structured, not prose.** `continue.json` is schema-validated,
 size-capped, rendered into the next prompt inside a nonce fence, and explicitly
 subordinated to RUN.md. Free-form prose is where prompt injection lives; a
@@ -299,6 +312,22 @@ the repository.
   still refuses to start rather than being quietly ignored, and it is still
   journaled as `sandbox.extra-domains`. Read that line as "configured", not as
   "applied": in full trust every host is reachable whether or not it is listed.
+- **`allow_tools_extra`** (`config.json`, full-trust runs only) — extra tool
+  names for the allow list, comma-separated (`"Monitor,LSP"`). Sessions run
+  under `--permission-mode dontAsk`, where any tool NOT explicitly allowed is
+  refused — including tools a newer CLI ships that relay has never heard of
+  (a real `Monitor` call was observed denied mid-run). In `disabled` mode the
+  names are added to the allow list, which since 1.1.0 already includes
+  `WebFetch` and `WebSearch`; in `enforced` mode the key is validated and
+  journaled but deliberately NOT applied — the enforced payload is a
+  release-asserted constant, and web tools' in-process egress versus the
+  sandbox allowlist is unverified. Watch the journal's `session.denials`
+  lines to see when a run needs this.
+- **`max_wall_secs`** (`config.json`, default 0 = off) — a wall-clock cap for
+  the whole launch. Checked before each session spawn, never mid-session, so
+  a run can overshoot by at most about one session timeout; exits 23 with
+  `reason: "wall-clock"`. Measured per launch and never persisted: a
+  `/relay-resume` starts a fresh window.
 - **`sandbox_mode`** (`config.json`, default `enforced`) — `enforced` runs every
   session under the OS sandbox. `disabled` is the full-trust opt-in described
   above: no sandbox, so SSH, arbitrary hosts and any readable file are in reach,

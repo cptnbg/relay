@@ -136,15 +136,31 @@ knowing what the plan actually demands.
 - external gates (DNS, payments, third-party approval)
 - anything the plan explicitly defers "to the owner"
 
-**3. Ask, in batches, with `AskUserQuestion`.** Cover the unknowns you found,
-plus: the model tier (must be `opus`, `sonnet`, or `fable` — the supervisor
-refuses anything else) and its context window, session and total budget caps,
-max sessions, wall-clock cap, review cadence, extra egress domains the build
-needs (`allow_domains`, e.g. a package registry — under `enforced` the sandbox
-blocks everything not listed; under `disabled` there is no allowlist and the key
-does nothing, though a malformed value still refuses to start), log retention
-(`keep_sessions`, `keep_days`), and the acceptance command that proves the work
-is done.
+**3. Ask, in batches, with `AskUserQuestion`.** First ask the run profile —
+`standard` (default) or `long-haul` (a plan expected to need tens of sessions
+or more than ~6 hours). For `long-haul`, SUGGEST — never silently apply —
+`max_sessions` 50-100, `session_timeout_secs` 7200, `stall_limit` 4,
+`max_timeouts` 3, `review_every` 4, `keep_sessions` 20, `max_wall_secs` sized
+to the operator's window (43200 for overnight, 0 for none),
+`budget_usd_per_session` 5.00 or higher on opus (doctor warns below that in
+full trust: a budget-capped session dies without writing a handoff), and
+`budget_usd_total` ≈ max_sessions × per-session × 0.6 — say the resulting
+dollar figure out loud and get an explicit yes; it is the number that spends.
+
+Then cover the unknowns you found, plus: the model tier (must be `opus`,
+`sonnet`, or `fable` — the supervisor refuses anything else) and its context
+window, session and total budget caps, max sessions, the wall-clock cap
+(`max_wall_secs`, seconds, 0 = none; measured per launch — a `/relay-resume`
+starts a fresh window), review cadence, extra egress domains the build needs
+(`allow_domains`, e.g. a package registry — under `enforced` the sandbox
+blocks everything not listed; under `disabled` there is no allowlist and the
+key does nothing, though a malformed value still refuses to start), extra
+tool names for full-trust runs (`allow_tools_extra`, comma-separated bare
+tool names — applied only under `disabled`, where WebFetch and WebSearch are
+already allowed since 1.1.0; use it when a run keeps logging
+`session.denials` for a tool relay does not know), log retention
+(`keep_sessions`, `keep_days`), and the acceptance command that proves the
+work is done.
 
 Also ask for `sandbox_mode`, but only offer the second option when the plan
 genuinely needs it, and never pre-select it:
@@ -193,6 +209,29 @@ that filter is NOT weakened in full-trust mode — it matters more there, since
 the sandbox is no longer a boundary. Sessions echo RUN.md's phrasing, and
 "full-trust mode" never trips it, whereas improvising "the user approved
 disabling the sandbox" into a handoff would halt the run.
+
+**4b. For a large plan, write `$STATE/work/PLAN-INDEX.md`.** Guidance
+threshold: a plan over ~400 lines. Every session re-reads its sources, and on
+a large plan that is tens of thousands of tokens per session spent
+re-ingesting text that never changes; with an index, sessions read the step
+list plus only their current step's section, and the supervisor gains a step
+vocabulary for its drift detection and phase gates. One row per ordered step:
+
+```markdown
+# PLAN INDEX — generated at init from <plan-path>; regenerated on plan change
+S1 | ## Phase 1 — scaffold | repo builds clean
+S2 | ## Phase 2 — auth     | login e2e passes
+```
+
+Three rules. Step ids match `[A-Za-z0-9_-]{1,32}` — they land in state
+records and gate log filenames. The middle column is the plan heading
+**byte-exact** (sessions locate their section by Grep for it; a paraphrase
+finds nothing and forces a full-plan read). The full plan remains canonical:
+the index is navigation, never a substitute — the reading order the
+supervisor gives sessions says so explicitly. Review it with the user like
+every other init artifact. If the plan changes mid-run, the supervisor
+forces a review session and that session regenerates the index, keeping the
+ids of surviving steps.
 
 **5. Write `$STATE/config.json`** from `$RELAY_ROOT/config/defaults.json`
 merged with the interview answers — including `sandbox_mode`, which must be
@@ -357,6 +396,12 @@ fi
 Then report:
 - `$STATE/state.json`: status, session count, tier, stall/fastfail counters, cost,
   and `sandbox_mode`
+- `denials_total` and `last_denial_tools` from state.json, plus any
+  `session.denials` journal lines — repeated denials mean the run is fighting
+  a deny rule or a user-scope hook, not failing; doctor's user-hooks warning
+  names the likely culprit
+- the tail of `$STATE/ledger.md` — the per-session run arc the supervisor
+  keeps (mode, tier, productive, commits, step)
 - the last ~20 journal lines (`$STATE/journal.log`)
 - the current position from `$STATE/work/continue.json` (`next` is the live
   answer to "what is it doing right now")
@@ -373,6 +418,11 @@ Present it as prose a person can read on a phone, not a data dump.
 and hands off cleanly, then the supervisor exits. Resume later with
 `/relay resume`.
 
+Stop is also the supported way to **edit RUN.md mid-run**: the supervisor
+hashes RUN.md's protected region (everything above "## Course corrections")
+and halts the run BLOCKED if a session changes it — an edit made while
+stopped is re-baselined at the next launch instead.
+
 ---
 
 ## `note <text>`
@@ -386,11 +436,24 @@ stopping it** — the main reason relay is steerable from a phone.
 ## `resume`
 
 1. If `$STATE/work/BLOCKED.md` exists, read it and **triage before anything
-   else**. Three BLOCKED variants are *security events*, not questions:
+   else**. Five BLOCKED variants are *security events*, not questions:
    - "handoff asserts a relaxed guardrail" (`reason: guardrail-drift`)
    - "possible credential in staged changes" (`reason: secret-detected`)
    - "acceptance command failed approval verification" (`reason:
      exec-hash-mismatch`)
+   - "RUN.md protected region changed" (`reason: run-md-tampered`) — a
+     session edited the mission/guardrails/decisions above the "## Course
+     corrections" marker. If the user edited RUN.md themselves mid-run, this
+     is the guard working as documented: the supported path is /relay-stop,
+     edit, /relay-resume (the supervisor re-baselines at launch). Anything
+     else: read the session log first.
+   - "phase gates failed approval verification" (`reason:
+     gates-hash-mismatch`) — something rewrote gate commands after approval.
+
+   One more BLOCKED variant is operational, not a security event: "phase gate
+   failed twice" (`reason: gate-failed`) means an approved checkpoint cannot
+   be satisfied — read `$STATE/run/gate-<id>.log`, fix the underlying
+   failure (or re-approve changed gates), then resume.
 
    These mean suspected prompt injection or tampering reached relay's rails.
    Do not just relaunch: open the session log path referenced in BLOCKED.md,
@@ -407,8 +470,11 @@ stopping it** — the main reason relay is steerable from a phone.
    it checks them against live in `$STATE/state.json` and **persist**:
    `session_count`, `cost_total`, `stall_count`, `fastfail_streak`,
    `timeouts`. So:
-   - exit 23 (`EX_CAPPED`): raise `max_sessions` above the recorded
-     `session_count`, or the relaunch exits 23 again immediately.
+   - exit 23 (`EX_CAPPED`): if `reason` is empty, raise `max_sessions` above
+     the recorded `session_count`, or the relaunch exits 23 again
+     immediately. If `reason` is `wall-clock`, relaunching alone grants a
+     fresh window (the clock is per launch, never persisted); raise or zero
+     `max_wall_secs` only if the cap itself was wrong.
    - exit 29 (`EX_BUDGET`): raise `budget_usd_total` above the recorded
      `cost_total`, same reason.
    - exit 21 (`EX_STALLED`) / 26 (`EX_FASTFAIL`): the streaks persist too; the
@@ -448,6 +514,35 @@ writable set — so a mismatch means an out-of-band edit after approval. In
 full-trust mode the file is reachable from Bash, which is why the check also
 requires the argv to equal the value captured in memory at preflight: rewriting
 the command and its hash together on disk still fails.)
+
+**Phase gates** (optional, for runs with a PLAN-INDEX): `exec.json` may also
+carry `phase_gates` — up to 8 human-approved argv checkpoints that the
+supervisor runs mechanically when the run reports crossing a step boundary,
+and again for any still-unpassed gate before COMPLETE is accepted:
+
+```json
+{ "acceptance_cmd": ["npm", "test"],
+  "phase_gates": [
+    { "id": "g1", "after_step": "S2", "cmd": ["npm", "run", "typecheck"] },
+    { "id": "g2", "after_step": "S4", "cmd": ["npm", "test"] }
+  ] }
+```
+
+Show EVERY gate's id, after_step and exact argv, get explicit confirmation
+for the set, then record one hash over the whole canonical array — gates
+interact, so changing any one of them must force re-approval of all:
+
+```bash
+GATES_HASH=$(jq -c '.phase_gates' "$STATE/exec.json" | git hash-object --stdin)
+jq --arg h "$GATES_HASH" '.gates_hash = $h' "$STATE/exec.json" \
+  > "$STATE/exec.json.tmp" && mv "$STATE/exec.json.tmp" "$STATE/exec.json"
+```
+
+Tell the user two things about gates. They must be DETERMINISTIC — a flaky
+gate that fails twice halts the run BLOCKED, by design (a checkpoint the run
+cannot satisfy is exactly when a human must look). And their `after_step`
+values must be PLAN-INDEX step ids; a gate whose step never resolves simply
+waits and runs at COMPLETE instead.
 
 **A repository can never make relay run a command.** `.relay/config.json` in a
 repo holds settings only. If you find a command-bearing key in a repo-tracked

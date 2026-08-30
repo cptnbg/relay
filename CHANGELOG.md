@@ -6,6 +6,114 @@ recorded user consent.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-30
+
+Long-run autonomy: zero permission friction in full-trust mode, a run that
+carries its own arc, mechanical plan alignment, and machine-run checkpoints —
+built for multi-hour, tens-of-sessions builds with the sandbox off. **No
+SECURITY.md commitment is relaxed and the consent notice text is unchanged**,
+so no project that consented under 1.0.x owes a new acceptance. The enforced
+settings payload remains byte-identical to 1.0.0's when the new config keys
+are unset.
+
+### Added — permissions and resilience
+- **WebFetch and WebSearch are allowed in `disabled` mode** (and only there:
+  in `enforced` their in-process egress versus the sandbox allowlist is
+  unverified, so they stay denied). In full trust the network was already
+  open to curl; the refusal was pure friction, observed as real
+  `permission_denials` in run telemetry.
+- **`allow_tools_extra`** (config, default empty): extra tool names for the
+  disabled-mode allow list — the escape hatch for tools relay has never heard
+  of (a `Monitor` call from a newer harness was observed denied mid-run).
+  Validated fail-closed in every mode; applied only under `disabled`;
+  journaled as `permissions.extra-tools` with the mode, so "configured" and
+  "applied" stay distinguishable.
+- **Denial telemetry**: the supervisor parses `permission_denials` from each
+  session envelope — journal `session.denials n= count= tools=`, running
+  `denials_total`/`last_denial_tools` in state.json, one notification per run
+  at ≥3 denials in a session. Probe-pinned envelope shape
+  (probe0-permission-mode case E). Telemetry only; never touches control
+  flow.
+- **`max_wall_secs`** (config, default 0 = off): the wall-clock cap the init
+  interview used to collect and silently discard now exists. Per launch,
+  never persisted (a resume is a fresh window); checked pre-spawn and inside
+  the usage-limit backoff sleep; exits 23 with `reason: "wall-clock"`.
+- **A prompt rule that refusals are policy**: never retry the identical
+  call, never write BLOCKED.md over a denial, route around it (curl for
+  WebFetch, `git config --get remote.origin.url` for remotes).
+- **Doctor warnings**: user-scope PreToolUse/PostToolUse hooks (they run
+  inside relay sessions; a text-matching guard can deny mid-run); a project
+  located under a deny-write or denyRead directory; full-trust + opus with
+  `budget_usd_per_session` under 5 (a budget-capped session dies without
+  writing a handoff).
+- **A `long-haul` interview profile** in `/relay-init` that suggests sizing
+  for tens-of-sessions runs — including saying the total dollar figure out
+  loud.
+
+### Added — context and alignment
+- **The run ledger** (`$STATE/ledger.md`): one supervisor-written line per
+  surviving session (mode, tier, productive, commits, step, sanitized
+  done[0] note), rendered as the last 25 rows into every later prompt in a
+  fence that names the rows unverified self-reports. Session 30 now knows
+  how it got there without re-deriving the story from git log. Lives at the
+  supervisor-only state root; re-filtered at render time.
+- **The PLAN-INDEX protocol**: for large plans, init writes
+  `$STATE/work/PLAN-INDEX.md` (ordered step ids, byte-exact plan headings,
+  one-line acceptance) and sessions read the index plus ONLY their current
+  step's plan section — recovering tens of thousands of tokens per session
+  on large plans — with the full plan explicitly canonical on any conflict.
+  A mid-run plan change now forces a review session (`index.stale`), which
+  regenerates the index.
+- **`plan_step` in the handoff schema** (optional, ≤64 chars, strict when
+  present): the run's position becomes mechanical. Journaled per session,
+  rendered under `PLAN STEP:`, preserved by normalization, EXCLUDED from the
+  guardrail-drift scan on the same label-not-claim ground as files_touched
+  (a phase named "enable token auth" must not halt the run every session).
+- **Drift detection**: a plan_step going backward in index order forces one
+  review session (never a halt), with a cooldown so one incident cannot
+  cascade. Free-text steps opt out by construction (`drift.step-unknown`).
+- **A mechanical review digest**: review sessions get supervisor-computed
+  counters (sessions and commits since last review, breaker states, cost,
+  gates, last step) and rewritten duties — verify the claimed position
+  against git, spot-check done claims behaviourally, regenerate a stale
+  index, append Course corrections only.
+- **Phase gates** (`exec.json` `phase_gates`, opt-in, ≤8): human-approved
+  argv checkpoints run mechanically when the reported step crosses each
+  gate's `after_step`, and — for any gate still unpassed — at COMPLETE
+  verification, before the acceptance command. One `gates_hash` over the
+  canonical array (gates interact; changing any re-approves the set), the
+  same dual in-memory anchor as the acceptance command, output captured to
+  `run/gate-<id>.log`. First failure forces a review with the gate output
+  injected as fenced data; a second failure of the same gate halts the run
+  BLOCKED (`gate-failed`) — the owner-chosen boundary where autonomy ends.
+- **The RUN.md integrity guard**: the region above `## Course corrections`
+  (mission, guardrails, settled decisions) is hashed at launch — in memory,
+  where no session can reach in either mode — and any change halts the run
+  BLOCKED (`run-md-tampered`) with a bounded diff, before COMPLETE is even
+  considered. Course-corrections appends never trip it; the legit-edit path
+  is stop → edit → resume (a fresh supervisor re-baselines). A RUN.md
+  without the marker is protected whole, loudly (`runmd.no-marker`).
+- **Context-guard dead-band fix**: throttle bands retuned (30/50 instead of
+  40/55) plus an unconditional rescan every 8th call, so a single-call
+  context jump is seen within at most seven calls whatever the stale
+  percentage claimed.
+
+### Changed
+- The broad `Bash(git remote:*)` deny is **gone from disabled mode** — and
+  not narrowed, dropped, on probe evidence: a three-word deny prefix
+  (`Bash(git remote set-url:*)`) never fires on Claude Code 2.1.251, so the
+  planned mutator-only narrowing would have been decorative. `git push`
+  (two-word, provably matched) still holds commitment 2; the
+  rewrite-origin residual is documented in docs/security.md's full-trust
+  cost list. Enforced mode keeps the broad deny unchanged.
+- The acceptance command's argv loader is factored into
+  `relay_exec_argv_json`, shared with the gate runner — one copy of the
+  quoting-and-newline-safe code instead of two.
+- `probe0-sandbox-off.sh` gains case 4 (the real 1.1.0 disabled payload);
+  `probe0-permission-mode.sh` gains case E (the refusal shape under
+  `dontAsk`). Both re-run against Claude Code 2.1.251, results recorded in
+  docs/security.md.
+
 ## [1.0.2] - 2026-08-29
 
 Documentation correctness, plus the four small code items deferred out of the
